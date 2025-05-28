@@ -258,5 +258,18 @@ class SpotLiquidityBot:
 
 
 if __name__ == "__main__":
-    bot = SpotLiquidityBot()
+    import argparse
+
+    # Allow overriding the default market via environment variable or CLI.
+    default_market = os.getenv("MARKET", "BTC/USDC")
+
+    parser = argparse.ArgumentParser(description="Run the spot liquidity bot")
+    parser.add_argument(
+        "--market",
+        help="Trading pair to market make, e.g. BTC/USDC. Overrides $MARKET.",
+    )
+    args = parser.parse_args()
+
+    market = args.market or default_market
+    bot = SpotLiquidityBot(market=market)
     bot.run()
