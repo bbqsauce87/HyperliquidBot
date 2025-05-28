@@ -64,6 +64,15 @@ class SpotLiquidityBot:
         self.volume_log = open(volume_log_file, "a")
         self.processed_fills: set[str] = set()
 
+        # Ensure the configured market exists in the SDK metadata before
+        # attempting to subscribe. Otherwise, the SDK will raise a KeyError
+        # when trying to map the name to a coin index which can be confusing.
+        if self.market not in self.info.name_to_coin:
+            available = ", ".join(sorted(self.info.name_to_coin.keys()))
+            raise ValueError(
+                f"Unknown market '{self.market}'. Available markets: {available}"
+            )
+
         # BBO abonnieren
         self.info.subscribe({"type": "bbo", "coin": self.market}, self._on_bbo)
 
