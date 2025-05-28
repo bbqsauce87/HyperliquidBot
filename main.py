@@ -30,7 +30,7 @@ class SpotLiquidityBot:
         check_interval: int = 5,
         log_file: str = "trade_log.txt",
         volume_log_file: str = "volume_log.txt",
-        reprice_threshold: float = 0.005,
+        reprice_threshold: float | None = None,
         dynamic_reprice_on_bbo: bool = False,
         *,
         usd_size_min: float | None = None,
@@ -47,7 +47,9 @@ class SpotLiquidityBot:
         self.usd_size_max = usd_size_max
         self.spread = spread
         self.check_interval = check_interval
-        self.reprice_threshold = reprice_threshold
+        self.reprice_threshold = (
+            reprice_threshold if reprice_threshold is not None else 2 * spread
+        )
         self.dynamic_reprice_on_bbo = dynamic_reprice_on_bbo
         self.start_order_price = start_order_price
         self.start_order_size = start_order_size
@@ -267,6 +269,7 @@ class SpotLiquidityBot:
         mid = self._mid_price()
         if mid is None:
             return
+        cancelled = False
         for oid, info in list(self.open_orders.items()):
             level = info.get("level", 1)
             target_price = self._price_for_side(info["side"], level, mid)
@@ -276,6 +279,9 @@ class SpotLiquidityBot:
                 )
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
+                cancelled = True
+        if cancelled:
+            self.ensure_orders()
 
     def run(self) -> None:
         self._log("Bot started")

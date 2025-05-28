@@ -95,3 +95,13 @@ bot = SpotLiquidityBot(start_order_price=90000, start_order_size=0.001)
 The bot normally starts **without** a test order; the example above would submit
 a buy for `0.001` BTC at `90,000` USDC right after launch.
 
+## Repricing behaviour
+
+Orders are periodically repriced when the mid price drifts too far from the
+original order price. The `reprice_threshold` parameter now defaults to
+`2 * spread`, automatically scaling with your chosen spread.
+
+When `dynamic_reprice_on_bbo` is enabled, cancelled orders are replaced
+immediately after a best bid/offer update instead of waiting for the normal
+`check_interval` loop.
+
