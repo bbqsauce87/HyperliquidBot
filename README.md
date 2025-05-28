@@ -77,7 +77,8 @@ when the BTC price changes.
 bot = SpotLiquidityBot(size_min=0.0002, size_max=0.0003,
                        spread=0.0004,
                        min_usd_order_size=20,
-                       max_usd_order_size=50)
+                       max_usd_order_size=50,
+                       max_order_age=300)
 ```
 
 `spread=0.0004` means orders are quoted 0.04% away from the mid price
@@ -109,4 +110,10 @@ original order price. The `reprice_threshold` parameter now defaults to
 When `dynamic_reprice_on_bbo` is enabled, cancelled orders are replaced
 immediately after a best bid/offer update instead of waiting for the normal
 `check_interval` loop.
+
+## Order expiration
+
+Each order is tagged with a timestamp when placed.  If an order remains open
+longer than `max_order_age` seconds (default: `300`), it will be cancelled on
+the next iteration of the main loop.
 

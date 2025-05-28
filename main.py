@@ -40,6 +40,7 @@ class SpotLiquidityBot:
         price_tick: float = 1.0,
         max_usd_order_size: float = 50.0,
         min_usd_order_size: float = 20.0,
+        max_order_age: int = 300,
     ) -> None:
         """Create a new bot instance.
 
@@ -67,6 +68,7 @@ class SpotLiquidityBot:
         self.price_tick = price_tick
         self.max_usd_order_size = max_usd_order_size
         self.min_usd_order_size = min_usd_order_size
+        self.max_order_age = max_order_age
 
         self.best_bid: float | None = None
         self.best_ask: float | None = None
@@ -133,7 +135,12 @@ class SpotLiquidityBot:
         self._log(f"Placing startup order: buy {startup_size} @ {startup_price}")
         oid = self._place_order("buy", startup_price, startup_size)
         if oid:
-            self.open_orders[oid] = {"side": "buy", "price": startup_price, "size": startup_size}
+            self.open_orders[oid] = {
+                "side": "buy",
+                "price": startup_price,
+                "size": startup_size,
+                "timestamp": time.time(),
+            }
 
     def _mid_price(self) -> float | None:
         if self.best_bid is not None and self.best_ask is not None:
@@ -264,8 +271,15 @@ class SpotLiquidityBot:
                         px = self._round_price(mid * (1 + self.spread)) if new_side == "sell" else self._round_price(mid * (1 - self.spread))
                         new_id = self._place_order(new_side, px, filled)
                         if new_id:
-                            chain_orders[new_id] = {"side": "B" if new_side == "buy" else "A"}
-                            self.open_orders[new_id] = {"side": new_side, "price": px, "size": filled}
+                            chain_orders[new_id] = {
+                                "side": "B" if new_side == "buy" else "A"
+                            }
+                            self.open_orders[new_id] = {
+                                "side": new_side,
+                                "price": px,
+                                "size": filled,
+                                "timestamp": time.time(),
+                            }
             else:
                 # Komplett gefüllt oder gecancelt
                 self._log(f"Order fully filled/canceled: oid={oid}, side={info['side']} px={info['price']} sz={info['size']}")
@@ -275,8 +289,15 @@ class SpotLiquidityBot:
                     px = self._round_price(mid * (1 + self.spread)) if new_side == "sell" else self._round_price(mid * (1 - self.spread))
                     new_id = self._place_order(new_side, px, info["size"])
                     if new_id:
-                        chain_orders[new_id] = {"side": "B" if new_side == "buy" else "A"}
-                        self.open_orders[new_id] = {"side": new_side, "price": px, "size": info["size"]}
+                        chain_orders[new_id] = {
+                            "side": "B" if new_side == "buy" else "A"
+                        }
+                        self.open_orders[new_id] = {
+                            "side": new_side,
+                            "price": px,
+                            "size": info["size"],
+                            "timestamp": time.time(),
+                        }
                 self.open_orders.pop(oid, None)
 
         # Cleanup
@@ -318,7 +339,12 @@ class SpotLiquidityBot:
             self._log(f"ensure_orders: placing buy at {buy_price} size={buy_size}")
             oid = self._place_order("buy", buy_price, buy_size)
             if oid:
-                self.open_orders[oid] = {"side": "buy", "price": buy_price, "size": buy_size}
+                self.open_orders[oid] = {
+                    "side": "buy",
+                    "price": buy_price,
+                    "size": buy_size,
+                    "timestamp": time.time(),
+                }
 
         if "sell" not in sides:
             sell_price = self._round_price(mid * (1 + self.spread))
@@ -326,7 +352,12 @@ class SpotLiquidityBot:
             self._log(f"ensure_orders: placing sell at {sell_price} size={sell_size}")
             oid = self._place_order("sell", sell_price, sell_size)
             if oid:
-                self.open_orders[oid] = {"side": "sell", "price": sell_price, "size": sell_size}
+                self.open_orders[oid] = {
+                    "side": "sell",
+                    "price": sell_price,
+                    "size": sell_size,
+                    "timestamp": time.time(),
+                }
 
     def reprice_orders(self) -> None:
         mid = self._mid_price()
@@ -340,6 +371,15 @@ class SpotLiquidityBot:
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
 
+    def cancel_expired_orders(self) -> None:
+        now = time.time()
+        for oid, info in list(self.open_orders.items()):
+            ts = info.get("timestamp")
+            if ts is not None and now - ts > self.max_order_age:
+                self._log(f"Order oid={oid} older than {self.max_order_age}s; canceling")
+                self.cancel_order(oid)
+                self.open_orders.pop(oid, None)
+
     def _dynamic_reprice(self) -> None:
         self.reprice_orders()
 
@@ -348,6 +388,7 @@ class SpotLiquidityBot:
         while True:
             time.sleep(self.check_interval)
             with self.lock:
+                self.cancel_expired_orders()
                 self.reprice_orders()
                 self.ensure_orders()
             self.check_fills()
@@ -364,5 +405,6 @@ if __name__ == "__main__":
         debug=True,
         max_usd_order_size=50.0,
         min_usd_order_size=20.0,
+        max_order_age=300,
     )
     bot.run()
