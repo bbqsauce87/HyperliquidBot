@@ -36,8 +36,15 @@ class SpotLiquidityBot:
         price_tick: float = 1.0
     ) -> None:
         self.market = market
-        self.size_min = size_min
-        self.size_max = size_max
+        self.info = Info(BASE_URL)
+
+        # Determine the allowed precision for order sizes of this market
+        asset = self.info.name_to_asset(market)
+        self.decimals = self.info.asset_to_sz_decimals[asset]
+
+        # Round provided size bounds to the permitted precision
+        self.size_min = round(size_min, self.decimals)
+        self.size_max = round(size_max, self.decimals)
         self.spread = spread
         self.check_interval = check_interval
         self.reprice_threshold = reprice_threshold
@@ -53,7 +60,6 @@ class SpotLiquidityBot:
 
         account = Account.from_key(WALLET_PRIVATE_KEY)
         self.exchange = Exchange(account, BASE_URL, account_address=WALLET_ADDRESS)
-        self.info = Info(BASE_URL)
         self.address = WALLET_ADDRESS
 
         os.makedirs("logs", exist_ok=True)
@@ -127,11 +133,12 @@ class SpotLiquidityBot:
         return round(raw_px / self.price_tick) * self.price_tick
 
     def _random_size(self) -> float:
-        return round(random.uniform(self.size_min, self.size_max), 6)
+        return round(random.uniform(self.size_min, self.size_max), self.decimals)
 
     def _place_order(self, side: str, raw_price: float, size: float) -> int | None:
         # Preis an Tick anpassen
         price = self._round_price(raw_price)
+        size = round(size, self.decimals)
         is_buy = (side.lower() == "buy")
         if self.debug:
             self._log(f"[DEBUG] Attempting order: side={side}, px={price}, sz={size}")
