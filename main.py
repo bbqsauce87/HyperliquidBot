@@ -246,6 +246,40 @@ class SpotLiquidityBot:
             self._log(f"Exception fetching open_orders: {e}")
             return None
 
+    def load_open_orders(self) -> None:
+        """Populate ``self.open_orders`` from the exchange state.
+
+        This is useful on startup so the bot is aware of any existing orders
+        and the expiration timer can clean them up if needed.
+        """
+        try:
+            raw = self.info.open_orders(self.address)
+        except Exception as exc:
+            self._log(f"Failed to fetch open orders: {exc}")
+            return
+
+        self.open_orders.clear()
+        for order in raw:
+            if order.get("coin") != self.coin_code:
+                continue
+            oid = order.get("oid")
+            if oid is None:
+                continue
+            side = "buy" if order.get("side") == "B" else "sell"
+            px = float(order.get("limitPx", 0.0))
+            sz = float(order.get("sz", 0.0))
+            ts = order.get("timestamp")
+            if ts is not None:
+                ts = ts / 1000.0  # api provides ms
+            else:
+                ts = time.time()
+            self.open_orders[oid] = {
+                "side": side,
+                "price": px,
+                "size": sz,
+                "timestamp": ts,
+            }
+
     def cancel_order(self, oid: int) -> None:
         try:
             resp = self.exchange.cancel(self.market, oid)
@@ -400,16 +434,25 @@ class SpotLiquidityBot:
             self._log(f"Failed to fetch open orders on startup: {exc}")
             return
 
-        for o in open_os:
-            oid = o.get("oid")
-            coin = o.get("coin", self.market)
-            if oid is None:
-                continue
-            try:
-                resp = self.exchange.cancel(coin, oid)
-                self._log(f"Startup cancel oid={oid}: {resp}")
-            except Exception as exc:
-                self._log(f"Error canceling oid={oid}: {exc}")
+        cancels = [
+            {"coin": o["coin"], "oid": o["oid"]}
+            for o in open_os
+            if o.get("coin") == self.coin_code and o.get("oid") is not None
+        ]
+        if not cancels:
+            self._log("No open orders found.")
+            self.open_orders.clear()
+            return
+
+        try:
+            resp = self.exchange.bulk_cancel(cancels)
+            self._log(f"Startup bulk cancel response: {resp}")
+        except Exception as exc:
+            self._log(f"Error bulk canceling orders: {exc}")
+
+        # give the API a moment to process and then refresh local state
+        time.sleep(1)
+        self.load_open_orders()
 
     def run(self) -> None:
         self._log("Bot started (tickSize approach).")
