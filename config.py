@@ -1,4 +1,18 @@
-WALLET_PRIVATE_KEY = "0x9766a78dfde13e3427b74ae751d1386b4c7319bc6bfef6e9bc21a31f6e4bfb3c"
-WALLET_ADDRESS = "0x2604a13f7e643b8f5b3c894d6023d6de8c4e1682"
-BASE_URL = "https://api.hyperliquid.xyz"
-RPC_URL = "https://api.hyperliquid.xyz/rpc"
+"""Configuration for the trading bot.
+
+Sensitive values are loaded from environment variables instead of being
+hard-coded in the repository.
+"""
+
+import os
+
+WALLET_PRIVATE_KEY = os.environ.get("WALLET_PRIVATE_KEY")
+if not WALLET_PRIVATE_KEY:
+    raise EnvironmentError("WALLET_PRIVATE_KEY environment variable not set")
+
+WALLET_ADDRESS = os.environ.get("WALLET_ADDRESS")
+if not WALLET_ADDRESS:
+    raise EnvironmentError("WALLET_ADDRESS environment variable not set")
+
+BASE_URL = os.environ.get("BASE_URL", "https://api.hyperliquid.xyz")
+RPC_URL = os.environ.get("RPC_URL", "https://api.hyperliquid.xyz/rpc")
