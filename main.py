@@ -15,7 +15,11 @@ from config import WALLET_ADDRESS, WALLET_PRIVATE_KEY, BASE_URL
 
 
 class SpotLiquidityBot:
-    """Simple spot market making bot using the Hyperliquid SDK."""
+    """Simple spot market making bot using the Hyperliquid SDK.
+
+    Parameters marked with `usd_size_min` and `usd_size_max` allow sizing
+    orders by their value in USDC instead of specifying the base asset size.
+    """
 
     def __init__(
         self,
@@ -28,12 +32,17 @@ class SpotLiquidityBot:
         volume_log_file: str = "volume_log.txt",
         reprice_threshold: float = 0.005,
         dynamic_reprice_on_bbo: bool = False,
+        *,
+        usd_size_min: float | None = None,
+        usd_size_max: float | None = None,
     ) -> None:
         self.market = market
         if self.market != "UBTC/USDC":
             raise ValueError("SpotLiquidityBot only supports the UBTC/USDC market")
         self.size_min = size_min
         self.size_max = size_max
+        self.usd_size_min = usd_size_min
+        self.usd_size_max = usd_size_max
         self.spread = spread
         self.check_interval = check_interval
         self.reprice_threshold = reprice_threshold
@@ -101,7 +110,10 @@ class SpotLiquidityBot:
             return (self.best_bid + self.best_ask) / 2
         return None
 
-    def _random_size(self) -> float:
+    def _random_size(self, mid: float) -> float:
+        if self.usd_size_min is not None and self.usd_size_max is not None:
+            usd_amt = random.uniform(self.usd_size_min, self.usd_size_max)
+            return round(usd_amt / mid, 6)
         return round(random.uniform(self.size_min, self.size_max), 6)
 
     def _price_for_side(self, side: str, level: int, mid: float) -> float:
@@ -222,7 +234,7 @@ class SpotLiquidityBot:
                 )
                 if not exists:
                     price = self._price_for_side(side, level, mid)
-                    size = self._random_size()
+                    size = self._random_size(mid)
                     oid = self._place_order(side, price, size)
                     if oid:
                         self.open_orders[oid] = {

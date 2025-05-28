@@ -67,15 +67,17 @@ bot.
 
 ## Adjusting order size
 
-By default the bot places orders between **5** and **10** UBTC per side. With the
-current BTC price around **108\,000 USDC** this would require over
-500\,000&nbsp;USDC for a single order. If your account balance is smaller you
-should lower `size_min` and `size_max` when creating the bot, e.g.
+Orders can be sized either in UBTC or directly in USDC.  For a small
+account (e.g. around **1000&nbsp;USDC**) it is convenient to specify the
+value per order in USDC using the new `usd_size_min` and
+`usd_size_max` parameters:
 
 ```python
-bot = SpotLiquidityBot(size_min=0.001, size_max=0.002)
+bot = SpotLiquidityBot(usd_size_min=50, usd_size_max=100)
 ```
 
-This places orders of roughly 100–200&nbsp;USDC (given the example price above).
-Adjust these values to match the latest BTC price and your available funds.
+This configuration creates orders worth roughly 50–100&nbsp;USDC each,
+keeping the exposure sensible for a 1000&nbsp;USDC account.  You can still
+use `size_min` and `size_max` to specify the size directly in UBTC if you
+prefer.
 
