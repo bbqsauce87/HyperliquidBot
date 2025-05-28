@@ -178,8 +178,9 @@ class SpotLiquidityBot:
     def _fetch_open_orders(self) -> dict[int, dict]:
         # Achtung: info.open_orders() existiert wohl, 'balances()' jedoch nicht
         try:
+            coin_code = self.info.name_to_coin.get(self.market, self.market.split("/")[0])
             open_os = self.info.open_orders(self.address)
-            return {o["oid"]: o for o in open_os if o["coin"] == self.market}
+            return {o["oid"]: o for o in open_os if o["coin"] == coin_code}
         except Exception as e:
             self._log(f"Exception fetching open_orders: {e}")
             return {}
