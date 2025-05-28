@@ -328,5 +328,6 @@ class SpotLiquidityBot:
 
 if __name__ == "__main__":
     # Start placing normal volume-oriented orders around the market price
-    bot = SpotLiquidityBot(usd_size_min=50, usd_size_max=100)
+    # Enable debug logging to see full API responses
+    bot = SpotLiquidityBot(usd_size_min=50, usd_size_max=100, debug=True)
     bot.run()
