@@ -101,6 +101,10 @@ bot = SpotLiquidityBot(start_order_price=90000, start_order_size=0.001)
 The bot normally starts **without** a test order; the example above would submit
 a buy for `0.001` BTC at `90,000` USDC right after launch.
 
+On every startup the bot also cleans up any open orders that may still
+be resting on the exchange. This ensures stale orders don't consume
+capital before new quotes are placed.
+
 ## Repricing behaviour
 
 Orders are periodically repriced when the mid price drifts too far from the
