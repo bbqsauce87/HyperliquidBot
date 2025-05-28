@@ -32,6 +32,7 @@ class SpotLiquidityBot:
         volume_log_file: str = "volume_log.txt",
         reprice_threshold: float = 0.005,
         dynamic_reprice_on_bbo: bool = False,
+        debug: bool = False,
         *,
         usd_size_min: float | None = None,
         usd_size_max: float | None = None,
@@ -49,6 +50,7 @@ class SpotLiquidityBot:
         self.check_interval = check_interval
         self.reprice_threshold = reprice_threshold
         self.dynamic_reprice_on_bbo = dynamic_reprice_on_bbo
+        self.debug = debug
         self.start_order_price = start_order_price
         self.start_order_size = start_order_size
         self.best_bid: float | None = None
@@ -68,7 +70,7 @@ class SpotLiquidityBot:
         volume_log_file = os.path.join("logs", volume_log_file)
 
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG if debug else logging.INFO,
             format="[%(asctime)s] %(message)s",
             handlers=[
                 logging.FileHandler(log_file),
@@ -99,7 +101,8 @@ class SpotLiquidityBot:
 
     def _on_bbo(self, msg) -> None:
         """Callback für BBO-Updates."""
-        print(f"[DEBUG] BBO erhalten: {msg}")
+        if self.debug:
+            self.logger.debug(f"BBO erhalten: {msg}")
         bid, ask = msg["data"]["bbo"]
         with self.lock:
             if bid is not None:
