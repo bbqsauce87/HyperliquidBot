@@ -77,20 +77,21 @@ bot = SpotLiquidityBot(usd_size_min=50, usd_size_max=100)
 ```
 
 This configuration creates orders worth roughly 50–100&nbsp;USDC each,
-keeping the exposure sensible for a 1000&nbsp;USDC account.  You can still
-use `size_min` and `size_max` to specify the size directly in UBTC if you
-prefer.
+keeping the exposure sensible for a 1000&nbsp;USDC account. The bot will
+immediately place buy and sell orders around the current mid price using
+these sizes. You can still use `size_min` and `size_max` to specify the
+size directly in UBTC if you prefer.
 
 ## Startup test order
 
-For quickly verifying that the bot can submit trades, you can instruct it to
-place a small limit order as soon as it starts.  Set `start_order_price` and
+If you want to quickly verify that trading works, you can instruct the bot to
+place a small limit order as soon as it starts. Provide `start_order_price` and
 `start_order_size` when constructing the bot:
 
 ```python
 bot = SpotLiquidityBot(start_order_price=90000, start_order_size=0.001)
 ```
 
-With the example above the bot submits a buy order for `0.001` BTC at a price of
-`90,000` USDC right after launch.
+The bot normally starts **without** a test order; the example above would submit
+a buy for `0.001` BTC at `90,000` USDC right after launch.
 
