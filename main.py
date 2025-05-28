@@ -24,6 +24,7 @@ class SpotLiquidityBot:
         spread: float = 0.0002,
         check_interval: int = 5,
         log_file: str = "trade_log.txt",
+        volume_log_file: str = "volume_log.txt",
         reprice_threshold: float = 0.005,
         dynamic_reprice_on_bbo: bool = False,
     ) -> None:
@@ -50,7 +51,11 @@ class SpotLiquidityBot:
             level=logging.INFO,
             format="[%(asctime)s] %(message)s",
         )
+
         self.logger = logging.getLogger("bot")
+
+        self.volume_log = open(volume_log_file, "a")
+        self.processed_fills: set[str] = set()
 
         # Subscribe to BBO updates via websocket
         self.info.subscribe({"type": "bbo", "coin": self.market}, self._on_bbo)
@@ -162,6 +167,27 @@ class SpotLiquidityBot:
                         }
                 self.open_orders.pop(oid, None)
         self.open_orders = {oid: o for oid, o in self.open_orders.items() if oid in chain_orders}
+        self._record_fills()
+
+    def _record_fills(self) -> None:
+        try:
+            fills = self.info.user_fills(self.address)
+        except Exception as exc:
+            self._log(f"Error fetching fills: {exc}")
+            return
+
+        coin = self.market.split("/")[0]
+        for fill in fills:
+            if fill.get("coin") != coin:
+                continue
+            h = fill.get("hash")
+            if h in self.processed_fills:
+                continue
+            self.processed_fills.add(h)
+            size = fill.get("filledSz") or fill.get("sz")
+            price = fill.get("avgPx") or fill.get("px")
+            fee = fill.get("fee")
+            self.volume_log.write(f"{size},{price},{fee}\n")
 
     def ensure_orders(self) -> None:
         mid = self._mid_price()
