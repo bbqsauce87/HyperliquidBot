@@ -233,14 +233,18 @@ class SpotLiquidityBot:
 
         return None
 
-    def _fetch_open_orders(self) -> dict[int, dict]:
-        # Achtung: info.open_orders() existiert wohl, 'balances()' jedoch nicht
+    def _fetch_open_orders(self) -> dict[int, dict] | None:
+        """Return the current open orders for this wallet.
+
+        If the request fails, ``None`` is returned so callers can
+        differentiate between "no open orders" and "request failed".
+        """
         try:
             open_os = self.info.open_orders(self.address)
             return {o["oid"]: o for o in open_os if o["coin"] == self.coin_code}
         except Exception as e:
             self._log(f"Exception fetching open_orders: {e}")
-            return {}
+            return None
 
     def cancel_order(self, oid: int) -> None:
         try:
@@ -255,6 +259,10 @@ class SpotLiquidityBot:
 
     def check_fills(self) -> None:
         chain_orders = self._fetch_open_orders()
+        if chain_orders is None:
+            self._log("check_fills: unable to fetch open orders; skipping check.")
+            self._record_fills()
+            return
         for oid, info in list(self.open_orders.items()):
             chain_info = chain_orders.get(oid)
             if chain_info:
@@ -383,8 +391,29 @@ class SpotLiquidityBot:
     def _dynamic_reprice(self) -> None:
         self.reprice_orders()
 
+    def cancel_all_open_orders(self) -> None:
+        """Cancel any resting orders on the account before trading starts."""
+        self._log("Checking for leftover open orders...")
+        try:
+            open_os = self.info.open_orders(self.address)
+        except Exception as exc:
+            self._log(f"Failed to fetch open orders on startup: {exc}")
+            return
+
+        for o in open_os:
+            oid = o.get("oid")
+            coin = o.get("coin", self.market)
+            if oid is None:
+                continue
+            try:
+                resp = self.exchange.cancel(coin, oid)
+                self._log(f"Startup cancel oid={oid}: {resp}")
+            except Exception as exc:
+                self._log(f"Error canceling oid={oid}: {exc}")
+
     def run(self) -> None:
         self._log("Bot started (tickSize approach).")
+        self.cancel_all_open_orders()
         while True:
             time.sleep(self.check_interval)
             with self.lock:
