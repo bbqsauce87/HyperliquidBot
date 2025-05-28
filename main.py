@@ -156,7 +156,8 @@ class SpotLiquidityBot:
 
     def _fetch_open_orders(self) -> dict[int, dict]:
         orders = self.info.open_orders(self.address)
-        return {o["oid"]: o for o in orders if o["coin"] == self.market}
+        coin = self.market.split("/")[0]
+        return {o["oid"]: o for o in orders if o.get("coin") == coin}
 
     def check_fills(self) -> None:
         chain_orders = self._fetch_open_orders()
