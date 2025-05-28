@@ -14,6 +14,9 @@ export WALLET_PRIVATE_KEY=<your_private_key>
 export WALLET_ADDRESS=<your_wallet_address>
 ```
 
+`run.sh` prüft diese Variablen beim Start und bricht mit einer Fehlermeldung
+ab, falls sie fehlen.
+
 Optional environment variables:
 
 ```bash
