@@ -120,6 +120,21 @@ class SpotLiquidityBot:
                         f"Order partially filled: oid={oid}, side={info['side']}, filled={filled}, remaining={remaining}"
                     )
                     self.open_orders[oid]["size"] = remaining
+                    mid = self._mid_price()
+                    if mid:
+                        new_side = "sell" if info["side"] == "buy" else "buy"
+                        price = round(
+                            mid * (1 + self.spread) if new_side == "sell" else mid * (1 - self.spread),
+                            4,
+                        )
+                        new_id = self._place_order(new_side, price, filled)
+                        if new_id:
+                            chain_orders[new_id] = {"side": "B" if new_side == "buy" else "A"}
+                            self.open_orders[new_id] = {
+                                "side": new_side,
+                                "price": price,
+                                "size": filled,
+                            }
             else:
                 self._log(
                     f"Order filled: oid={oid}, side={info['side']}, price={info['price']}, size={info['size']}"
