@@ -39,7 +39,7 @@ class SpotLiquidityBot:
         # Falls es 0.5 oder 0.1 sein soll, bitte anpassen.
         price_tick: float = 1.0,
         max_usd_order_size: float = 50.0,
-        min_usd_order_size: float = 10.0,
+        min_usd_order_size: float = 20.0,
     ) -> None:
         """Create a new bot instance.
 
@@ -362,6 +362,6 @@ if __name__ == "__main__":
         price_tick=1.0,
         debug=True,
         max_usd_order_size=50.0,
-        min_usd_order_size=10.0,
+        min_usd_order_size=20.0,
     )
     bot.run()

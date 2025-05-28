@@ -69,13 +69,13 @@ bot.
 
 Orders can be sized in UBTC via the `size_min` and `size_max`
 parameters.  Every order must also satisfy a USD value range.
-`min_usd_order_size` enforces the exchange's minimum (default: `10`),
+`min_usd_order_size` enforces the exchange's minimum (default: `20`),
 while `max_usd_order_size` (default: `50`) prevents overly large orders
 when the BTC price changes.
 
 ```python
 bot = SpotLiquidityBot(size_min=0.0002, size_max=0.0003,
-                       min_usd_order_size=10,
+                       min_usd_order_size=20,
                        max_usd_order_size=50)
 ```
 
