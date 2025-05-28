@@ -41,6 +41,7 @@ class SpotLiquidityBot:
         self.best_bid: float | None = None
         self.best_ask: float | None = None
         self.open_orders: dict[int, dict] = {}
+        self.levels = [1, 2]
         self.lock = Lock()
 
         # Setup SDK clients
@@ -103,6 +104,10 @@ class SpotLiquidityBot:
     def _random_size(self) -> float:
         return round(random.uniform(self.size_min, self.size_max), 6)
 
+    def _price_for_side(self, side: str, level: int, mid: float) -> float:
+        mult = 1 + level * self.spread if side == "sell" else 1 - level * self.spread
+        return round(mid * mult, 4)
+
     def _place_order(self, side: str, price: float, size: float) -> int | None:
         is_buy = side == "buy"
         resp = self.exchange.order(
@@ -151,11 +156,9 @@ class SpotLiquidityBot:
                     self.open_orders[oid]["size"] = remaining
                     mid = self._mid_price()
                     if mid:
+                        level = info.get("level", 1)
                         new_side = "sell" if info["side"] == "buy" else "buy"
-                        price = round(
-                            mid * (1 + self.spread) if new_side == "sell" else mid * (1 - self.spread),
-                            4,
-                        )
+                        price = self._price_for_side(new_side, level, mid)
                         new_id = self._place_order(new_side, price, filled)
                         if new_id:
                             chain_orders[new_id] = {"side": "B" if new_side == "buy" else "A"}
@@ -163,6 +166,7 @@ class SpotLiquidityBot:
                                 "side": new_side,
                                 "price": price,
                                 "size": filled,
+                                "level": level,
                             }
             else:
                 self._log(
@@ -170,11 +174,9 @@ class SpotLiquidityBot:
                 )
                 mid = self._mid_price()
                 if mid:
+                    level = info.get("level", 1)
                     new_side = "sell" if info["side"] == "buy" else "buy"
-                    price = round(
-                        mid * (1 + self.spread) if new_side == "sell" else mid * (1 - self.spread),
-                        4,
-                    )
+                    price = self._price_for_side(new_side, level, mid)
                     new_id = self._place_order(new_side, price, info["size"])
                     if new_id:
                         chain_orders[new_id] = {"side": "B" if new_side == "buy" else "A"}
@@ -182,6 +184,7 @@ class SpotLiquidityBot:
                             "side": new_side,
                             "price": price,
                             "size": info["size"],
+                            "level": level,
                         }
                 self.open_orders.pop(oid, None)
         self.open_orders = {oid: o for oid, o in self.open_orders.items() if oid in chain_orders}
@@ -211,28 +214,34 @@ class SpotLiquidityBot:
         mid = self._mid_price()
         if mid is None:
             return
-        sides = {info["side"] for info in self.open_orders.values()}
-        if "buy" not in sides:
-            price = round(mid * (1 - self.spread), 4)
-            size = self._random_size()
-            oid = self._place_order("buy", price, size)
-            if oid:
-                self.open_orders[oid] = {"side": "buy", "price": price, "size": size}
-        if "sell" not in sides:
-            price = round(mid * (1 + self.spread), 4)
-            size = self._random_size()
-            oid = self._place_order("sell", price, size)
-            if oid:
-                self.open_orders[oid] = {"side": "sell", "price": price, "size": size}
+        for side in ("buy", "sell"):
+            for level in self.levels:
+                exists = any(
+                    o["side"] == side and o.get("level", 1) == level
+                    for o in self.open_orders.values()
+                )
+                if not exists:
+                    price = self._price_for_side(side, level, mid)
+                    size = self._random_size()
+                    oid = self._place_order(side, price, size)
+                    if oid:
+                        self.open_orders[oid] = {
+                            "side": side,
+                            "price": price,
+                            "size": size,
+                            "level": level,
+                        }
 
     def reprice_orders(self) -> None:
         mid = self._mid_price()
         if mid is None:
             return
         for oid, info in list(self.open_orders.items()):
-            if abs(mid - info["price"]) / info["price"] > self.reprice_threshold:
+            level = info.get("level", 1)
+            target_price = self._price_for_side(info["side"], level, mid)
+            if abs(target_price - info["price"]) / info["price"] > self.reprice_threshold:
                 self._log(
-                    f"Repricing order oid={oid}, old_price={info['price']}, mid={mid}"
+                    f"Repricing order oid={oid}, old_price={info['price']}, target={target_price}"
                 )
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
@@ -242,9 +251,11 @@ class SpotLiquidityBot:
         if mid is None:
             return
         for oid, info in list(self.open_orders.items()):
-            if abs(mid - info["price"]) / info["price"] > self.reprice_threshold:
+            level = info.get("level", 1)
+            target_price = self._price_for_side(info["side"], level, mid)
+            if abs(target_price - info["price"]) / info["price"] > self.reprice_threshold:
                 self._log(
-                    f"Repricing order oid={oid}, old_price={info['price']}, mid={mid}"
+                    f"Repricing order oid={oid}, old_price={info['price']}, target={target_price}"
                 )
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
