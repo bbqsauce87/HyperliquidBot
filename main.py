@@ -278,19 +278,11 @@ class SpotLiquidityBot:
 
     def run(self) -> None:
         self._log("Bot started")
-        # Optionally place a test order on startup
-        if self.start_order_price is not None:
-            self._log(
-                f"Placing startup order: buy {self.start_order_size} @ {self.start_order_price}"
-            )
-            oid = self._place_order("buy", self.start_order_price, self.start_order_size)
-            if oid:
-                self.open_orders[oid] = {
-                    "side": "buy",
-                    "price": self.start_order_price,
-                    "size": self.start_order_size,
-                    "level": 1,
-                }
+        # Wait for the first mid price so we can place initial orders
+        while self._mid_price() is None:
+            time.sleep(0.1)
+        with self.lock:
+            self.ensure_orders()
         while True:
             time.sleep(self.check_interval)
             with self.lock:
@@ -300,6 +292,6 @@ class SpotLiquidityBot:
 
 
 if __name__ == "__main__":
-    # Place a small test order on startup to verify trading works
-    bot = SpotLiquidityBot(start_order_price=90000, start_order_size=0.001)
+    # Start placing normal volume-oriented orders around the market price
+    bot = SpotLiquidityBot(usd_size_min=50, usd_size_max=100)
     bot.run()
