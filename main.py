@@ -52,6 +52,7 @@ class SpotLiquidityBot:
         # Determine the allowed precision for order sizes of this market
         asset = self.info.name_to_asset(market)
         self.decimals = self.info.asset_to_sz_decimals[asset]
+        self.coin_code = self.info.name_to_coin.get(market, market.split("/")[0])
 
         # Round provided size bounds to the permitted precision
         self.size_min = round(size_min, self.decimals)
@@ -211,9 +212,8 @@ class SpotLiquidityBot:
     def _fetch_open_orders(self) -> dict[int, dict]:
         # Achtung: info.open_orders() existiert wohl, 'balances()' jedoch nicht
         try:
-            coin_code = self.info.name_to_coin.get(self.market, self.market.split("/")[0])
             open_os = self.info.open_orders(self.address)
-            return {o["oid"]: o for o in open_os if o["coin"] == coin_code}
+            return {o["oid"]: o for o in open_os if o["coin"] == self.coin_code}
         except Exception as e:
             self._log(f"Exception fetching open_orders: {e}")
             return {}
