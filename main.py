@@ -22,12 +22,14 @@ class SpotLiquidityBot:
         spread: float = 0.0002,
         check_interval: int = 5,
         log_file: str = "trade_log.txt",
+        reprice_threshold: float = 0.005,
     ) -> None:
         self.market = market
         self.size_min = size_min
         self.size_max = size_max
         self.spread = spread
         self.check_interval = check_interval
+        self.reprice_threshold = reprice_threshold
         self.best_bid: float | None = None
         self.best_ask: float | None = None
         self.open_orders: dict[int, dict] = {}
@@ -95,6 +97,13 @@ class SpotLiquidityBot:
             self._log(f"Order error: {resp}")
         return None
 
+    def cancel_order(self, oid: int) -> None:
+        resp = self.exchange.cancel(self.market, oid)
+        if resp.get("status") == "ok":
+            self._log(f"Canceled order oid={oid}")
+        else:
+            self._log(f"Failed to cancel oid={oid}: {resp}")
+
     def _fetch_open_orders(self) -> dict[int, dict]:
         orders = self.info.open_orders(self.address)
         return {o["oid"]: o for o in orders if o["coin"] == self.market}
@@ -102,7 +111,16 @@ class SpotLiquidityBot:
     def check_fills(self) -> None:
         chain_orders = self._fetch_open_orders()
         for oid, info in list(self.open_orders.items()):
-            if oid not in chain_orders:
+            chain_info = chain_orders.get(oid)
+            if chain_info:
+                remaining = float(chain_info["sz"])
+                if remaining < info["size"]:
+                    filled = info["size"] - remaining
+                    self._log(
+                        f"Order partially filled: oid={oid}, side={info['side']}, filled={filled}, remaining={remaining}"
+                    )
+                    self.open_orders[oid]["size"] = remaining
+            else:
                 self._log(
                     f"Order filled: oid={oid}, side={info['side']}, price={info['price']}, size={info['size']}"
                 )
@@ -142,12 +160,25 @@ class SpotLiquidityBot:
             if oid:
                 self.open_orders[oid] = {"side": "sell", "price": price, "size": size}
 
+    def reprice_orders(self) -> None:
+        mid = self._mid_price()
+        if mid is None:
+            return
+        for oid, info in list(self.open_orders.items()):
+            if abs(mid - info["price"]) / info["price"] > self.reprice_threshold:
+                self._log(
+                    f"Repricing order oid={oid}, old_price={info['price']}, mid={mid}"
+                )
+                self.cancel_order(oid)
+                self.open_orders.pop(oid, None)
+
     # ------------------------------------------------------------------
     def run(self) -> None:
         self._log("Bot started")
         while True:
             time.sleep(self.check_interval)
             with self.lock:
+                self.reprice_orders()
                 self.ensure_orders()
             self.check_fills()
 
