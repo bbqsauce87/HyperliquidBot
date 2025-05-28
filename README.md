@@ -34,7 +34,7 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 ```bash
 ./run.sh
 ```
-=======
+
 # Hyperliquid Liquidity Bot
 
 This repository contains a simple example bot that provides liquidity on the
