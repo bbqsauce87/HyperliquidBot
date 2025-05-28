@@ -19,7 +19,7 @@ class SpotLiquidityBot:
 
     def __init__(
         self,
-        market: str = "BTC/USDC",
+        market: str = "UBTC/USDC",
         size_min: float = 5,
         size_max: float = 10,
         spread: float = 0.0002,
@@ -30,6 +30,8 @@ class SpotLiquidityBot:
         dynamic_reprice_on_bbo: bool = False,
     ) -> None:
         self.market = market
+        if self.market != "UBTC/USDC":
+            raise ValueError("SpotLiquidityBot only supports the UBTC/USDC market")
         self.size_min = size_min
         self.size_max = size_max
         self.spread = spread
@@ -258,18 +260,5 @@ class SpotLiquidityBot:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    # Allow overriding the default market via environment variable or CLI.
-    default_market = os.getenv("MARKET", "BTC/USDC")
-
-    parser = argparse.ArgumentParser(description="Run the spot liquidity bot")
-    parser.add_argument(
-        "--market",
-        help="Trading pair to market make, e.g. BTC/USDC. Overrides $MARKET.",
-    )
-    args = parser.parse_args()
-
-    market = args.market or default_market
-    bot = SpotLiquidityBot(market=market)
+    bot = SpotLiquidityBot()
     bot.run()
