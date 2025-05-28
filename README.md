@@ -21,6 +21,13 @@ export BASE_URL=https://api.hyperliquid.xyz      # default value
 export RPC_URL=https://api.hyperliquid.xyz/rpc   # default value
 ```
 
+If your environment sets `http_proxy` or `https_proxy`, unset them before
+running the bot so requests go directly to the Hyperliquid API:
+
+```bash
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+```
+
 3. Start the bot using the provided script which sets up a virtual
    environment and runs `main.py`:
 
