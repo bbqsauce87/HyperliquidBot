@@ -18,7 +18,7 @@ class SpotLiquidityBot:
 
     def __init__(
         self,
-        market: str = "BTC/USDC",
+        market: str = "UBTC/USDC",
         size_min: float = 5,
         size_max: float = 10,
         spread: float = 0.0002,
