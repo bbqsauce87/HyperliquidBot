@@ -15,70 +15,52 @@ from config import WALLET_ADDRESS, WALLET_PRIVATE_KEY, BASE_URL
 
 
 class SpotLiquidityBot:
-    """Simple spot market making bot using the Hyperliquid SDK.
-
-    Parameters marked with `usd_size_min` and `usd_size_max` allow sizing
-    orders by their value in USDC instead of specifying the base asset size.
-    """
+    """Spot Market-Making Bot using the Hyperliquid SDK, adapted for correct tick-size and minimal sizes."""
 
     def __init__(
         self,
         market: str = "UBTC/USDC",
-        size_min: float = 5,
-        size_max: float = 10,
+        # Annahme: Minimale Größenschritte ~ 0.0001 UBTC, hier einfach 0.001–0.01 zum Test
+        size_min: float = 0.001,
+        size_max: float = 0.01,
+        # Spread z. B. 0.0002 = 0.02 %
         spread: float = 0.0002,
         check_interval: int = 5,
         log_file: str = "trade_log.txt",
         volume_log_file: str = "volume_log.txt",
-        reprice_threshold: float | None = None,
+        reprice_threshold: float = 0.005,
         dynamic_reprice_on_bbo: bool = False,
-        debug: bool = False,
-        *,
-        usd_size_min: float | None = None,
-        usd_size_max: float | None = None,
-        start_order_price: float | None = None,
-        start_order_size: float = 0.001,
+        debug: bool = True,
+        # Angenommene Tick Size (z. B. 1 USDC- Schritt). 
+        # Falls es 0.5 oder 0.1 sein soll, bitte anpassen.
+        price_tick: float = 1.0
     ) -> None:
         self.market = market
-        if self.market != "UBTC/USDC":
-            raise ValueError("SpotLiquidityBot only supports the UBTC/USDC market")
         self.size_min = size_min
         self.size_max = size_max
-        self.usd_size_min = usd_size_min
-        self.usd_size_max = usd_size_max
         self.spread = spread
         self.check_interval = check_interval
-        self.reprice_threshold = (
-            reprice_threshold if reprice_threshold is not None else 2 * spread
-        )
+        self.reprice_threshold = reprice_threshold
         self.dynamic_reprice_on_bbo = dynamic_reprice_on_bbo
         self.debug = debug
-        self.start_order_price = start_order_price
-        self.start_order_size = start_order_size
+        self.price_tick = price_tick
+
         self.best_bid: float | None = None
         self.best_ask: float | None = None
         self.open_orders: dict[int, dict] = {}
-        self.levels = [1, 2]
+        self.first_bbo_received = False
         self.lock = Lock()
-        self._logged_first_bbo = False
 
-        # Setup SDK clients
         account = Account.from_key(WALLET_PRIVATE_KEY)
         self.exchange = Exchange(account, BASE_URL, account_address=WALLET_ADDRESS)
         self.info = Info(BASE_URL)
         self.address = WALLET_ADDRESS
 
-        proxies = {k: v for k, v in os.environ.items() if k.lower().endswith("_proxy")}
-        logging.getLogger("bot").info(
-            f"Initialized with BASE_URL={BASE_URL}, proxies={proxies}"
-        )
-
-        # Logs vorbereiten
+        os.makedirs("logs", exist_ok=True)
         log_file = os.path.join("logs", log_file)
         volume_log_file = os.path.join("logs", volume_log_file)
-
         logging.basicConfig(
-            level=logging.DEBUG if debug else logging.INFO,
+            level=logging.INFO,
             format="[%(asctime)s] %(message)s",
             handlers=[
                 logging.FileHandler(log_file),
@@ -90,135 +72,163 @@ class SpotLiquidityBot:
         self.volume_log = open(volume_log_file, "a")
         self.processed_fills: set[str] = set()
 
-        # Ensure the configured market exists in the SDK metadata before
-        # attempting to subscribe. Otherwise, the SDK will raise a KeyError
-        # when trying to map the name to a coin index which can be confusing.
-        if self.market not in self.info.name_to_coin:
-            available = ", ".join(sorted(self.info.name_to_coin.keys()))
-            raise ValueError(
-                f"Unknown market '{self.market}'. Available markets: {available}"
-            )
+        self._log("Bot initialized (tickSize fix).")
 
-        # BBO abonnieren
+        # ACHTUNG: info.balances() existiert anscheinend nicht in deiner SDK-Version
+        # => wir lassen diesen Teil weg oder implementieren "info.balances()" selbst, falls verfügbar.
+
         self.info.subscribe({"type": "bbo", "coin": self.market}, self._on_bbo)
 
-    # ------------------------------------------------------------------
     def _log(self, msg: str) -> None:
         print(msg)
         self.logger.info(msg)
 
     def _on_bbo(self, msg) -> None:
-        """Callback für BBO-Updates."""
         if self.debug:
-            self.logger.debug(f"BBO erhalten: {msg}")
+            self._log(f"[DEBUG] BBO erhalten: {msg}")
+
         bid, ask = msg["data"]["bbo"]
         with self.lock:
             if bid is not None:
                 self.best_bid = float(bid["px"])
             if ask is not None:
                 self.best_ask = float(ask["px"])
-            if not self._logged_first_bbo and self.best_bid is not None and self.best_ask is not None:
-                self._logged_first_bbo = True
-                mid = self._mid_price()
-                self._log(f"Received first BBO: bid={self.best_bid} ask={self.best_ask} mid={mid}")
+
+            if not self.first_bbo_received and (self.best_bid and self.best_ask):
+                self.first_bbo_received = True
+                mid_ = self._mid_price()
+                self._log(f"Received first BBO: bid={self.best_bid} ask={self.best_ask} mid={mid_}")
+                self._place_startup_order(mid_)
+
             if self.dynamic_reprice_on_bbo:
                 self._dynamic_reprice()
+
+    def _place_startup_order(self, mid: float) -> None:
+        if mid is None:
+            return
+        startup_price = self._round_price(mid * (1 - 0.0001))
+        startup_size = 0.005  # z. B. 0.005 UBTC
+        self._log(f"Placing startup order: buy {startup_size} @ {startup_price}")
+        oid = self._place_order("buy", startup_price, startup_size)
+        if oid:
+            self.open_orders[oid] = {"side": "buy", "price": startup_price, "size": startup_size}
 
     def _mid_price(self) -> float | None:
         if self.best_bid is not None and self.best_ask is not None:
             return (self.best_bid + self.best_ask) / 2
         return None
 
-    def _random_size(self, mid: float) -> float:
-        if self.usd_size_min is not None and self.usd_size_max is not None:
-            usd_amt = random.uniform(self.usd_size_min, self.usd_size_max)
-            return round(usd_amt / mid, 6)
+    def _round_price(self, raw_px: float) -> float:
+        """
+        Rundet den Preis an das Tick-Raster an.
+        Beispiel: price_tick=1 => 107340.26 -> 107340
+                  price_tick=0.5 => 107340.26 -> 107340.0
+        """
+        return round(raw_px / self.price_tick) * self.price_tick
+
+    def _random_size(self) -> float:
         return round(random.uniform(self.size_min, self.size_max), 6)
 
-    def _price_for_side(self, side: str, level: int, mid: float) -> float:
-        mult = 1 + level * self.spread if side == "sell" else 1 - level * self.spread
-        return round(mid * mult, 4)
+    def _place_order(self, side: str, raw_price: float, size: float) -> int | None:
+        # Preis an Tick anpassen
+        price = self._round_price(raw_price)
+        is_buy = (side.lower() == "buy")
+        if self.debug:
+            self._log(f"[DEBUG] Attempting order: side={side}, px={price}, sz={size}")
 
-    def _place_order(self, side: str, price: float, size: float) -> int | None:
-        is_buy = side == "buy"
-        resp = self.exchange.order(
-            self.market,
-            is_buy,
-            size,
-            price,
-            {"limit": {"tif": "Gtc"}},
-        )
+        try:
+            resp = self.exchange.order(
+                self.market,
+                is_buy,
+                size,
+                price,
+                {"limit": {"tif": "Gtc"}},
+            )
+        except Exception as e:
+            self._log(f"Exception while placing order: {e}")
+            return None
+
+        self._log(f"Full order response: {resp}")
+
         if resp.get("status") == "ok":
-            status = resp["response"]["data"]["statuses"][0]
+            data = resp["response"]["data"]
+            statuses = data.get("statuses", [])
+            if not statuses:
+                self._log("Order response has no statuses. Possibly an error.")
+                return None
+
+            status = statuses[0]
             if "resting" in status:
                 oid = status["resting"]["oid"]
                 self._log(f"Placed {side} order oid={oid} price={price} size={size}")
                 return oid
             if "filled" in status:
-                self._log(
-                    f"{side.capitalize()} market order filled {status['filled']['totalSz']} @ {status['filled']['avgPx']}"
-                )
+                filled_qty = status["filled"]["totalSz"]
+                avg_price = status["filled"]["avgPx"]
+                self._log(f"{side.capitalize()} order instantly filled {filled_qty} @ {avg_price}")
+            if "error" in status:
+                self._log(f"Order error: {status['error']}")
+            if "rejected" in status:
+                self._log(f"Order was rejected: {status['rejected']['reason']}")
         else:
-            self._log(f"Order error: {resp}")
+            self._log(f"Order error (not 'ok'): {resp}")
+
         return None
 
-    def cancel_order(self, oid: int) -> None:
-        resp = self.exchange.cancel(self.market, oid)
-        if resp.get("status") == "ok":
-            self._log(f"Canceled order oid={oid}")
-        else:
-            self._log(f"Failed to cancel oid={oid}: {resp}")
-
     def _fetch_open_orders(self) -> dict[int, dict]:
-        orders = self.info.open_orders(self.address)
-        coin = self.market.split("/")[0]
-        return {o["oid"]: o for o in orders if o.get("coin") == coin}
+        # Achtung: info.open_orders() existiert wohl, 'balances()' jedoch nicht
+        try:
+            open_os = self.info.open_orders(self.address)
+            return {o["oid"]: o for o in open_os if o["coin"] == self.market}
+        except Exception as e:
+            self._log(f"Exception fetching open_orders: {e}")
+            return {}
+
+    def cancel_order(self, oid: int) -> None:
+        try:
+            resp = self.exchange.cancel(self.market, oid)
+            self._log(f"Cancel response: {resp}")
+            if resp.get("status") == "ok":
+                self._log(f"Canceled order oid={oid}")
+            else:
+                self._log(f"Failed to cancel oid={oid}: {resp}")
+        except Exception as e:
+            self._log(f"Exception while canceling order {oid}: {e}")
 
     def check_fills(self) -> None:
         chain_orders = self._fetch_open_orders()
         for oid, info in list(self.open_orders.items()):
             chain_info = chain_orders.get(oid)
             if chain_info:
+                # Teil-Fill?
                 remaining = float(chain_info["sz"])
                 if remaining < info["size"]:
                     filled = info["size"] - remaining
-                    self._log(
-                        f"Order partially filled: oid={oid}, side={info['side']}, filled={filled}, remaining={remaining}"
-                    )
+                    self._log(f"Order partially filled: oid={oid}, side={info['side']}, filled={filled}, remain={remaining}")
                     self.open_orders[oid]["size"] = remaining
+                    # Gegenseite
                     mid = self._mid_price()
-                    if mid:
-                        level = info.get("level", 1)
+                    if mid is not None:
                         new_side = "sell" if info["side"] == "buy" else "buy"
-                        price = self._price_for_side(new_side, level, mid)
-                        new_id = self._place_order(new_side, price, filled)
+                        px = self._round_price(mid * (1 + self.spread)) if new_side == "sell" else self._round_price(mid * (1 - self.spread))
+                        new_id = self._place_order(new_side, px, filled)
                         if new_id:
                             chain_orders[new_id] = {"side": "B" if new_side == "buy" else "A"}
-                            self.open_orders[new_id] = {
-                                "side": new_side,
-                                "price": price,
-                                "size": filled,
-                                "level": level,
-                            }
+                            self.open_orders[new_id] = {"side": new_side, "price": px, "size": filled}
             else:
-                self._log(
-                    f"Order filled: oid={oid}, side={info['side']}, price={info['price']}, size={info['size']}"
-                )
+                # Komplett gefüllt oder gecancelt
+                self._log(f"Order fully filled/canceled: oid={oid}, side={info['side']} px={info['price']} sz={info['size']}")
                 mid = self._mid_price()
-                if mid:
-                    level = info.get("level", 1)
+                if mid is not None:
                     new_side = "sell" if info["side"] == "buy" else "buy"
-                    price = self._price_for_side(new_side, level, mid)
-                    new_id = self._place_order(new_side, price, info["size"])
+                    px = self._round_price(mid * (1 + self.spread)) if new_side == "sell" else self._round_price(mid * (1 - self.spread))
+                    new_id = self._place_order(new_side, px, info["size"])
                     if new_id:
                         chain_orders[new_id] = {"side": "B" if new_side == "buy" else "A"}
-                        self.open_orders[new_id] = {
-                            "side": new_side,
-                            "price": price,
-                            "size": info["size"],
-                            "level": level,
-                        }
+                        self.open_orders[new_id] = {"side": new_side, "price": px, "size": info["size"]}
                 self.open_orders.pop(oid, None)
+
+        # Cleanup
         self.open_orders = {oid: o for oid, o in self.open_orders.items() if oid in chain_orders}
         self._record_fills()
 
@@ -228,7 +238,6 @@ class SpotLiquidityBot:
         except Exception as exc:
             self._log(f"Error fetching fills: {exc}")
             return
-
         coin = self.market.split("/")[0]
         for fill in fills:
             if fill.get("coin") != coin:
@@ -240,84 +249,51 @@ class SpotLiquidityBot:
             size = fill.get("filledSz") or fill.get("sz")
             price = fill.get("avgPx") or fill.get("px")
             fee = fill.get("fee")
-            self.volume_log.write(f"{size},{price},{fee}\n")
+            line = f"{size},{price},{fee}\n"
+            self.volume_log.write(line)
+            self.volume_log.flush()
 
     def ensure_orders(self) -> None:
         mid = self._mid_price()
         if mid is None:
+            if self.debug:
+                self._log("ensure_orders: mid price is None, skipping.")
             return
-        for side in ("buy", "sell"):
-            for level in self.levels:
-                exists = any(
-                    o["side"] == side and o.get("level", 1) == level
-                    for o in self.open_orders.values()
-                )
-                if not exists:
-                    price = self._price_for_side(side, level, mid)
-                    size = self._random_size(mid)
-                    oid = self._place_order(side, price, size)
-                    if oid:
-                        self.open_orders[oid] = {
-                            "side": side,
-                            "price": price,
-                            "size": size,
-                            "level": level,
-                        }
-        self._log(f"Open orders: {len(self.open_orders)}")
+        sides = {info["side"] for info in self.open_orders.values()}
+
+        if "buy" not in sides:
+            buy_price = self._round_price(mid * (1 - self.spread))
+            buy_size = self._random_size()
+            self._log(f"ensure_orders: placing buy at {buy_price} size={buy_size}")
+            oid = self._place_order("buy", buy_price, buy_size)
+            if oid:
+                self.open_orders[oid] = {"side": "buy", "price": buy_price, "size": buy_size}
+
+        if "sell" not in sides:
+            sell_price = self._round_price(mid * (1 + self.spread))
+            sell_size = self._random_size()
+            self._log(f"ensure_orders: placing sell at {sell_price} size={sell_size}")
+            oid = self._place_order("sell", sell_price, sell_size)
+            if oid:
+                self.open_orders[oid] = {"side": "sell", "price": sell_price, "size": sell_size}
 
     def reprice_orders(self) -> None:
         mid = self._mid_price()
         if mid is None:
             return
         for oid, info in list(self.open_orders.items()):
-            level = info.get("level", 1)
-            target_price = self._price_for_side(info["side"], level, mid)
-            if abs(target_price - info["price"]) / info["price"] > self.reprice_threshold:
-                self._log(
-                    f"Repricing order oid={oid}, old_price={info['price']}, target={target_price}"
-                )
+            old_price = info["price"]
+            dev = abs(mid - old_price) / (old_price if old_price != 0 else 1.0)
+            if dev > self.reprice_threshold:
+                self._log(f"Repricing order oid={oid}, old_price={old_price}, mid={mid}, dev={dev}")
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
 
     def _dynamic_reprice(self) -> None:
-        mid = self._mid_price()
-        if mid is None:
-            return
-        cancelled = False
-        for oid, info in list(self.open_orders.items()):
-            level = info.get("level", 1)
-            target_price = self._price_for_side(info["side"], level, mid)
-            if abs(target_price - info["price"]) / info["price"] > self.reprice_threshold:
-                self._log(
-                    f"Repricing order oid={oid}, old_price={info['price']}, target={target_price}"
-                )
-                self.cancel_order(oid)
-                self.open_orders.pop(oid, None)
-                cancelled = True
-        if cancelled:
-            self.ensure_orders()
+        self.reprice_orders()
 
     def run(self) -> None:
-        self._log("Bot started")
-        # Wait for the first mid price so we can place initial orders
-        waited = 0.0
-        while self._mid_price() is None:
-            if waited % 5 == 0:
-                self._log("Waiting for market data (mid price not available)")
-            time.sleep(0.5)
-            waited += 0.5
-        self._log(f"First mid price: {self._mid_price()}")
-        if self.start_order_price is not None:
-            with self.lock:
-                oid = self._place_order("buy", self.start_order_price, self.start_order_size)
-                if oid:
-                    self.open_orders[oid] = {
-                        "side": "buy",
-                        "price": self.start_order_price,
-                        "size": self.start_order_size,
-                    }
-        with self.lock:
-            self.ensure_orders()
+        self._log("Bot started (tickSize approach).")
         while True:
             time.sleep(self.check_interval)
             with self.lock:
@@ -327,7 +303,12 @@ class SpotLiquidityBot:
 
 
 if __name__ == "__main__":
-    # Start placing normal volume-oriented orders around the market price
-    # Enable debug logging to see full API responses
-    bot = SpotLiquidityBot(usd_size_min=50, usd_size_max=100, debug=True)
+    bot = SpotLiquidityBot(
+        market="UBTC/USDC",
+        # Test: Tick-Size = 1 USDC, min Size = 0.001 UBTC
+        size_min=0.00005,
+        size_max=0.0001,
+        price_tick=1.0,
+        debug=True
+    )
     bot.run()
