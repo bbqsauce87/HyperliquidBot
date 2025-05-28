@@ -1,83 +1,28 @@
-import json
-import random
-import threading
-import time
 import logging
+import random
+import time
+from threading import Lock
 
-import requests
-import websocket
 from eth_account import Account
-from eth_account.messages import encode_defunct
 
-from config import WALLET_ADDRESS, WALLET_PRIVATE_KEY, BASE_URL, RPC_URL
+from hyperliquid.exchange import Exchange
+from hyperliquid.info import Info
 
-
-class HyperliquidClient:
-    """Minimal RPC client for Hyperliquid spot trading."""
-
-    def __init__(self, address: str, private_key: str, rpc_url: str):
-        self.address = address
-        self.private_key = private_key
-        self.rpc_url = rpc_url
-
-    # internal helpers -------------------------------------------------
-    def _sign_payload(self, method: str, params: dict) -> tuple[str, int]:
-        timestamp = int(time.time())
-        message = f"{self.address}-{method}-{json.dumps(params, sort_keys=True)}-{timestamp}"
-        msg = encode_defunct(text=message)
-        signed = Account.sign_message(msg, self.private_key)
-        return signed.signature.hex(), timestamp
-
-    def _rpc_call(self, method: str, params: dict):
-        signature, timestamp = self._sign_payload(method, params)
-        body = {
-            "method": method,
-            "params": {**params, "signature": signature, "timestamp": timestamp},
-            "id": 1,
-        }
-        resp = requests.post(self.rpc_url, json=body, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        if "error" in data:
-            raise RuntimeError(str(data["error"]))
-        return data.get("result")
-
-    # public API -------------------------------------------------------
-    def place_order(self, market: str, side: str, price: float, size: float) -> str | None:
-        params = {
-            "market": market,
-            "side": side,
-            "price": float(price),
-            "size": float(size),
-            "sender": self.address,
-        }
-        result = self._rpc_call("placeSpotOrder", params)
-        return result.get("orderId") if result else None
-
-    def cancel_order(self, order_id: str) -> None:
-        params = {"orderId": order_id, "sender": self.address}
-        self._rpc_call("cancelSpotOrder", params)
-
-    def get_open_orders(self) -> list:
-        params = {"sender": self.address}
-        result = self._rpc_call("getOpenSpotOrders", params)
-        return result if result else []
+from config import WALLET_ADDRESS, WALLET_PRIVATE_KEY, BASE_URL
 
 
 class SpotLiquidityBot:
-    """Simple market making bot for Hyperliquid spot markets."""
+    """Simple spot market making bot using the Hyperliquid SDK."""
 
     def __init__(
         self,
-        client: HyperliquidClient,
-        market: str = "BTC-USDC",
+        market: str = "BTC/USDC",
         size_min: float = 5,
         size_max: float = 10,
         spread: float = 0.0002,
         check_interval: int = 5,
         log_file: str = "trade_log.txt",
     ) -> None:
-        self.client = client
         self.market = market
         self.size_min = size_min
         self.size_max = size_max
@@ -85,9 +30,14 @@ class SpotLiquidityBot:
         self.check_interval = check_interval
         self.best_bid: float | None = None
         self.best_ask: float | None = None
-        self.open_orders: dict[str, dict] = {}
-        self.ws: websocket.WebSocketApp | None = None
-        self.lock = threading.Lock()
+        self.open_orders: dict[int, dict] = {}
+        self.lock = Lock()
+
+        # Setup SDK clients
+        account = Account.from_key(WALLET_PRIVATE_KEY)
+        self.exchange = Exchange(account, BASE_URL, account_address=WALLET_ADDRESS)
+        self.info = Info(BASE_URL)
+        self.address = WALLET_ADDRESS
 
         logging.basicConfig(
             filename=log_file,
@@ -96,51 +46,24 @@ class SpotLiquidityBot:
         )
         self.logger = logging.getLogger("bot")
 
-    # logging helper ---------------------------------------------------
+        # Subscribe to BBO updates via websocket
+        self.info.subscribe({"type": "bbo", "coin": self.market}, self._on_bbo)
+
+    # ------------------------------------------------------------------
     def _log(self, msg: str) -> None:
         print(msg)
         self.logger.info(msg)
 
-    # websocket handling -----------------------------------------------
-    def _on_open(self, ws):
-        self._log("WebSocket connected")
-        subscribe = {
-            "method": "subscribe",
-            "topics": [f"orderbook.{self.market}"],
-            "id": 1,
-        }
-        ws.send(json.dumps(subscribe))
+    def _on_bbo(self, msg) -> None:
+        """Callback for websocket BBO updates."""
+        bid, ask = msg["data"]["bbo"]
+        with self.lock:
+            if bid is not None:
+                self.best_bid = float(bid["px"])
+            if ask is not None:
+                self.best_ask = float(ask["px"])
 
-    def _on_message(self, ws, message):
-        try:
-            data = json.loads(message)
-            ob = data.get("data")
-            if ob and "bids" in ob and "asks" in ob:
-                with self.lock:
-                    self.best_bid = float(ob["bids"][0][0])
-                    self.best_ask = float(ob["asks"][0][0])
-        except Exception as e:
-            self._log(f"Error parsing WebSocket message: {e}")
-
-    def _on_error(self, ws, error):
-        self._log(f"WebSocket error: {error}")
-
-    def _on_close(self, ws, status, msg):
-        self._log(f"WebSocket closed: {status}, {msg}")
-
-    def start_ws(self):
-        ws_url = f"{BASE_URL.replace('https', 'wss')}/ws"
-        self.ws = websocket.WebSocketApp(
-            ws_url,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close,
-        )
-        t = threading.Thread(target=self.ws.run_forever, daemon=True)
-        t.start()
-
-    # strategy helpers -------------------------------------------------
+    # ------------------------------------------------------------------
     def _mid_price(self) -> float | None:
         if self.best_bid is not None and self.best_ask is not None:
             return (self.best_bid + self.best_ask) / 2
@@ -149,58 +72,79 @@ class SpotLiquidityBot:
     def _random_size(self) -> float:
         return round(random.uniform(self.size_min, self.size_max), 6)
 
-    # order management -------------------------------------------------
-    def check_fills(self):
-        chain_orders = {o["orderId"]: o for o in self.client.get_open_orders()}
+    def _place_order(self, side: str, price: float, size: float) -> int | None:
+        is_buy = side == "buy"
+        resp = self.exchange.order(
+            self.market,
+            is_buy,
+            size,
+            price,
+            {"limit": {"tif": "Gtc"}},
+        )
+        if resp.get("status") == "ok":
+            status = resp["response"]["data"]["statuses"][0]
+            if "resting" in status:
+                oid = status["resting"]["oid"]
+                self._log(f"Placed {side} order oid={oid} price={price} size={size}")
+                return oid
+            if "filled" in status:
+                self._log(
+                    f"{side.capitalize()} market order filled {status['filled']['totalSz']} @ {status['filled']['avgPx']}"
+                )
+        else:
+            self._log(f"Order error: {resp}")
+        return None
+
+    def _fetch_open_orders(self) -> dict[int, dict]:
+        orders = self.info.open_orders(self.address)
+        return {o["oid"]: o for o in orders if o["coin"] == self.market}
+
+    def check_fills(self) -> None:
+        chain_orders = self._fetch_open_orders()
         for oid, info in list(self.open_orders.items()):
             if oid not in chain_orders:
                 self._log(
-                    f"Order filled: id={oid}, side={info['side']}, price={info['price']}, size={info['size']}"
+                    f"Order filled: oid={oid}, side={info['side']}, price={info['price']}, size={info['size']}"
                 )
                 mid = self._mid_price()
                 if mid:
-                    if info["side"].lower() == "buy":
-                        price = round(mid * (1 + self.spread), 4)
-                        new_id = self.client.place_order(self.market, "sell", price, info["size"])
-                        if new_id:
-                            chain_orders[new_id] = {
-                                "side": "sell",
-                                "price": price,
-                                "size": info["size"],
-                            }
-                    else:
-                        price = round(mid * (1 - self.spread), 4)
-                        new_id = self.client.place_order(self.market, "buy", price, info["size"])
-                        if new_id:
-                            chain_orders[new_id] = {
-                                "side": "buy",
-                                "price": price,
-                                "size": info["size"],
-                            }
+                    new_side = "sell" if info["side"] == "buy" else "buy"
+                    price = round(
+                        mid * (1 + self.spread) if new_side == "sell" else mid * (1 - self.spread),
+                        4,
+                    )
+                    new_id = self._place_order(new_side, price, info["size"])
+                    if new_id:
+                        chain_orders[new_id] = {"side": "B" if new_side == "buy" else "A"}
+                        self.open_orders[new_id] = {
+                            "side": new_side,
+                            "price": price,
+                            "size": info["size"],
+                        }
                 self.open_orders.pop(oid, None)
-        self.open_orders = chain_orders
+        self.open_orders = {oid: o for oid, o in self.open_orders.items() if oid in chain_orders}
 
-    def ensure_orders(self):
+    def ensure_orders(self) -> None:
         mid = self._mid_price()
         if mid is None:
             return
-        sides = {info["side"].lower() for info in self.open_orders.values()}
+        sides = {info["side"] for info in self.open_orders.values()}
         if "buy" not in sides:
             price = round(mid * (1 - self.spread), 4)
             size = self._random_size()
-            oid = self.client.place_order(self.market, "buy", price, size)
+            oid = self._place_order("buy", price, size)
             if oid:
                 self.open_orders[oid] = {"side": "buy", "price": price, "size": size}
         if "sell" not in sides:
             price = round(mid * (1 + self.spread), 4)
             size = self._random_size()
-            oid = self.client.place_order(self.market, "sell", price, size)
+            oid = self._place_order("sell", price, size)
             if oid:
                 self.open_orders[oid] = {"side": "sell", "price": price, "size": size}
 
-    # main loop --------------------------------------------------------
-    def run(self):
-        self.start_ws()
+    # ------------------------------------------------------------------
+    def run(self) -> None:
+        self._log("Bot started")
         while True:
             time.sleep(self.check_interval)
             with self.lock:
@@ -209,6 +153,5 @@ class SpotLiquidityBot:
 
 
 if __name__ == "__main__":
-    client = HyperliquidClient(WALLET_ADDRESS, WALLET_PRIVATE_KEY, RPC_URL)
-    bot = SpotLiquidityBot(client)
+    bot = SpotLiquidityBot()
     bot.run()
