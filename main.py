@@ -281,6 +281,15 @@ class SpotLiquidityBot:
         # Wait for the first mid price so we can place initial orders
         while self._mid_price() is None:
             time.sleep(0.1)
+        if self.start_order_price is not None:
+            with self.lock:
+                oid = self._place_order("buy", self.start_order_price, self.start_order_size)
+                if oid:
+                    self.open_orders[oid] = {
+                        "side": "buy",
+                        "price": self.start_order_price,
+                        "size": self.start_order_size,
+                    }
         with self.lock:
             self.ensure_orders()
         while True:
