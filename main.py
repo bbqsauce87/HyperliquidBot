@@ -25,6 +25,7 @@ class SpotLiquidityBot:
         check_interval: int = 5,
         log_file: str = "trade_log.txt",
         reprice_threshold: float = 0.005,
+        dynamic_reprice_on_bbo: bool = False,
     ) -> None:
         self.market = market
         self.size_min = size_min
@@ -32,6 +33,7 @@ class SpotLiquidityBot:
         self.spread = spread
         self.check_interval = check_interval
         self.reprice_threshold = reprice_threshold
+        self.dynamic_reprice_on_bbo = dynamic_reprice_on_bbo
         self.best_bid: float | None = None
         self.best_ask: float | None = None
         self.open_orders: dict[int, dict] = {}
@@ -66,6 +68,8 @@ class SpotLiquidityBot:
                 self.best_bid = float(bid["px"])
             if ask is not None:
                 self.best_ask = float(ask["px"])
+            if self.dynamic_reprice_on_bbo:
+                self._dynamic_reprice()
 
     # ------------------------------------------------------------------
     def _mid_price(self) -> float | None:
@@ -163,6 +167,19 @@ class SpotLiquidityBot:
                 self.open_orders[oid] = {"side": "sell", "price": price, "size": size}
 
     def reprice_orders(self) -> None:
+        mid = self._mid_price()
+        if mid is None:
+            return
+        for oid, info in list(self.open_orders.items()):
+            if abs(mid - info["price"]) / info["price"] > self.reprice_threshold:
+                self._log(
+                    f"Repricing order oid={oid}, old_price={info['price']}, mid={mid}"
+                )
+                self.cancel_order(oid)
+                self.open_orders.pop(oid, None)
+
+    def _dynamic_reprice(self) -> None:
+        """Reprice orders using the latest mid price on each BBO update."""
         mid = self._mid_price()
         if mid is None:
             return
