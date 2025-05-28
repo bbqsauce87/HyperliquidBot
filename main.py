@@ -39,11 +39,13 @@ class SpotLiquidityBot:
         # Falls es 0.5 oder 0.1 sein soll, bitte anpassen.
         price_tick: float = 1.0,
         max_usd_order_size: float = 50.0,
+        min_usd_order_size: float = 10.0,
     ) -> None:
         """Create a new bot instance.
 
         Parameters are largely self explanatory. ``max_usd_order_size`` limits
-        the value of any single order in USDC.
+        the value of any single order in USDC, while ``min_usd_order_size``
+        ensures orders are not rejected for being too small.
         """
 
         self.market = market
@@ -64,6 +66,7 @@ class SpotLiquidityBot:
         self.debug = debug
         self.price_tick = price_tick
         self.max_usd_order_size = max_usd_order_size
+        self.min_usd_order_size = min_usd_order_size
 
         self.best_bid: float | None = None
         self.best_ask: float | None = None
@@ -152,8 +155,22 @@ class SpotLiquidityBot:
         # Preis an Tick anpassen
         price = self._round_price(raw_price)
         size = round(size, self.decimals)
-        # Ensure the USD value of the order does not exceed the configured maximum
         usd_value = price * size
+        # Ensure the USD value of the order meets the configured minimum
+        if usd_value < self.min_usd_order_size:
+            min_size = round(self.min_usd_order_size / price, self.decimals)
+            if min_size * price > self.max_usd_order_size:
+                self._log(
+                    f"Order skipped: price={price} cannot satisfy USD bounds {self.min_usd_order_size}-{self.max_usd_order_size}"
+                )
+                return None
+            if self.debug:
+                self._log(
+                    f"[DEBUG] Increasing order size from {size} to {min_size} to meet min USD size"
+                )
+            size = min_size
+            usd_value = price * size
+        # Ensure the USD value of the order does not exceed the configured maximum
         if usd_value > self.max_usd_order_size:
             capped = round(self.max_usd_order_size / price, self.decimals)
             if capped <= 0:
@@ -345,5 +362,6 @@ if __name__ == "__main__":
         price_tick=1.0,
         debug=True,
         max_usd_order_size=50.0,
+        min_usd_order_size=10.0,
     )
     bot.run()

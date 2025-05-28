@@ -68,12 +68,14 @@ bot.
 ## Adjusting order size
 
 Orders can be sized in UBTC via the `size_min` and `size_max`
-parameters.  Additionally, each order is capped to a maximum USD value
-defined by `max_usd_order_size` (default: `50`).  This prevents overly
-large orders when the BTC price changes.
+parameters.  Every order must also satisfy a USD value range.
+`min_usd_order_size` enforces the exchange's minimum (default: `10`),
+while `max_usd_order_size` (default: `50`) prevents overly large orders
+when the BTC price changes.
 
 ```python
-bot = SpotLiquidityBot(size_min=0.00005, size_max=0.0001,
+bot = SpotLiquidityBot(size_min=0.0002, size_max=0.0003,
+                       min_usd_order_size=10,
                        max_usd_order_size=50)
 ```
 
