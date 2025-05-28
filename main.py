@@ -15,7 +15,11 @@ from config import WALLET_ADDRESS, WALLET_PRIVATE_KEY, BASE_URL
 
 
 class SpotLiquidityBot:
-    """Spot Market-Making Bot using the Hyperliquid SDK, adapted for correct tick-size and minimal sizes."""
+    """Simple market-making bot for the UBTC/USDC pair.
+
+    Orders are automatically capped so that their USD value does not
+    exceed ``max_usd_order_size``.
+    """
 
     def __init__(
         self,
@@ -33,8 +37,15 @@ class SpotLiquidityBot:
         debug: bool = True,
         # Angenommene Tick Size (z. B. 1 USDC- Schritt). 
         # Falls es 0.5 oder 0.1 sein soll, bitte anpassen.
-        price_tick: float = 1.0
+        price_tick: float = 1.0,
+        max_usd_order_size: float = 50.0,
     ) -> None:
+        """Create a new bot instance.
+
+        Parameters are largely self explanatory. ``max_usd_order_size`` limits
+        the value of any single order in USDC.
+        """
+
         self.market = market
         self.info = Info(BASE_URL)
 
@@ -51,6 +62,7 @@ class SpotLiquidityBot:
         self.dynamic_reprice_on_bbo = dynamic_reprice_on_bbo
         self.debug = debug
         self.price_tick = price_tick
+        self.max_usd_order_size = max_usd_order_size
 
         self.best_bid: float | None = None
         self.best_ask: float | None = None
@@ -139,6 +151,20 @@ class SpotLiquidityBot:
         # Preis an Tick anpassen
         price = self._round_price(raw_price)
         size = round(size, self.decimals)
+        # Ensure the USD value of the order does not exceed the configured maximum
+        usd_value = price * size
+        if usd_value > self.max_usd_order_size:
+            capped = round(self.max_usd_order_size / price, self.decimals)
+            if capped <= 0:
+                self._log(
+                    f"Order skipped: price={price} would exceed max USD size {self.max_usd_order_size}"
+                )
+                return None
+            if self.debug:
+                self._log(
+                    f"[DEBUG] Capping order size from {size} to {capped} due to max USD size"
+                )
+            size = capped
         is_buy = (side.lower() == "buy")
         if self.debug:
             self._log(f"[DEBUG] Attempting order: side={side}, px={price}, sz={size}")
@@ -317,6 +343,7 @@ if __name__ == "__main__":
         size_min=0.00005,
         size_max=0.0001,
         price_tick=1.0,
-        debug=True
+        debug=True,
+        max_usd_order_size=50.0,
     )
     bot.run()
