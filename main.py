@@ -2,6 +2,8 @@ import logging
 import random
 import time
 from threading import Lock
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "hyperliquid-python-sdk"))
 
 from eth_account import Account
 
