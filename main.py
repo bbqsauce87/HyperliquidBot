@@ -60,12 +60,18 @@ class SpotLiquidityBot:
         self.open_orders: dict[int, dict] = {}
         self.levels = [1, 2]
         self.lock = Lock()
+        self._logged_first_bbo = False
 
         # Setup SDK clients
         account = Account.from_key(WALLET_PRIVATE_KEY)
         self.exchange = Exchange(account, BASE_URL, account_address=WALLET_ADDRESS)
         self.info = Info(BASE_URL)
         self.address = WALLET_ADDRESS
+
+        proxies = {k: v for k, v in os.environ.items() if k.lower().endswith("_proxy")}
+        logging.getLogger("bot").info(
+            f"Initialized with BASE_URL={BASE_URL}, proxies={proxies}"
+        )
 
         # Logs vorbereiten
         log_file = os.path.join("logs", log_file)
@@ -111,6 +117,10 @@ class SpotLiquidityBot:
                 self.best_bid = float(bid["px"])
             if ask is not None:
                 self.best_ask = float(ask["px"])
+            if not self._logged_first_bbo and self.best_bid is not None and self.best_ask is not None:
+                self._logged_first_bbo = True
+                mid = self._mid_price()
+                self._log(f"Received first BBO: bid={self.best_bid} ask={self.best_ask} mid={mid}")
             if self.dynamic_reprice_on_bbo:
                 self._dynamic_reprice()
 
@@ -253,6 +263,7 @@ class SpotLiquidityBot:
                             "size": size,
                             "level": level,
                         }
+        self._log(f"Open orders: {len(self.open_orders)}")
 
     def reprice_orders(self) -> None:
         mid = self._mid_price()
@@ -289,8 +300,13 @@ class SpotLiquidityBot:
     def run(self) -> None:
         self._log("Bot started")
         # Wait for the first mid price so we can place initial orders
+        waited = 0.0
         while self._mid_price() is None:
-            time.sleep(0.1)
+            if waited % 5 == 0:
+                self._log("Waiting for market data (mid price not available)")
+            time.sleep(0.5)
+            waited += 0.5
+        self._log(f"First mid price: {self._mid_price()}")
         if self.start_order_price is not None:
             with self.lock:
                 oid = self._place_order("buy", self.start_order_price, self.start_order_size)
