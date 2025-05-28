@@ -81,3 +81,16 @@ keeping the exposure sensible for a 1000&nbsp;USDC account.  You can still
 use `size_min` and `size_max` to specify the size directly in UBTC if you
 prefer.
 
+## Startup test order
+
+For quickly verifying that the bot can submit trades, you can instruct it to
+place a small limit order as soon as it starts.  Set `start_order_price` and
+`start_order_size` when constructing the bot:
+
+```python
+bot = SpotLiquidityBot(start_order_price=90000, start_order_size=0.001)
+```
+
+With the example above the bot submits a buy order for `0.001` BTC at a price of
+`90,000` USDC right after launch.
+

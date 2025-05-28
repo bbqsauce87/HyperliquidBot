@@ -35,6 +35,8 @@ class SpotLiquidityBot:
         *,
         usd_size_min: float | None = None,
         usd_size_max: float | None = None,
+        start_order_price: float | None = None,
+        start_order_size: float = 0.001,
     ) -> None:
         self.market = market
         if self.market != "UBTC/USDC":
@@ -47,6 +49,8 @@ class SpotLiquidityBot:
         self.check_interval = check_interval
         self.reprice_threshold = reprice_threshold
         self.dynamic_reprice_on_bbo = dynamic_reprice_on_bbo
+        self.start_order_price = start_order_price
+        self.start_order_size = start_order_size
         self.best_bid: float | None = None
         self.best_ask: float | None = None
         self.open_orders: dict[int, dict] = {}
@@ -274,6 +278,19 @@ class SpotLiquidityBot:
 
     def run(self) -> None:
         self._log("Bot started")
+        # Optionally place a test order on startup
+        if self.start_order_price is not None:
+            self._log(
+                f"Placing startup order: buy {self.start_order_size} @ {self.start_order_price}"
+            )
+            oid = self._place_order("buy", self.start_order_price, self.start_order_size)
+            if oid:
+                self.open_orders[oid] = {
+                    "side": "buy",
+                    "price": self.start_order_price,
+                    "size": self.start_order_size,
+                    "level": 1,
+                }
         while True:
             time.sleep(self.check_interval)
             with self.lock:
@@ -283,5 +300,6 @@ class SpotLiquidityBot:
 
 
 if __name__ == "__main__":
-    bot = SpotLiquidityBot()
+    # Place a small test order on startup to verify trading works
+    bot = SpotLiquidityBot(start_order_price=90000, start_order_size=0.001)
     bot.run()
