@@ -359,6 +359,7 @@ if __name__ == "__main__":
         # Test: Tick-Size = 1 USDC, min Size = 0.001 UBTC
         size_min=0.00005,
         size_max=0.0001,
+        spread=0.0004,
         price_tick=1.0,
         debug=True,
         max_usd_order_size=50.0,

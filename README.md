@@ -75,9 +75,14 @@ when the BTC price changes.
 
 ```python
 bot = SpotLiquidityBot(size_min=0.0002, size_max=0.0003,
+                       spread=0.0004,
                        min_usd_order_size=20,
                        max_usd_order_size=50)
 ```
+
+`spread=0.0004` means orders are quoted 0.04% away from the mid price
+on each side. This small buffer keeps them from filling immediately
+while still providing tight liquidity.
 
 No single order will exceed the configured USD limit.  Adjust the
 values to suit the size of your account.
