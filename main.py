@@ -2,14 +2,15 @@ import logging
 import random
 import time
 from threading import Lock
-import os, sys
+import os
+import sys
+
+# Pfad zum SDK einfügen
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "hyperliquid-python-sdk"))
 
 from eth_account import Account
-
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
-
 from config import WALLET_ADDRESS, WALLET_PRIVATE_KEY, BASE_URL
 
 
@@ -18,7 +19,7 @@ class SpotLiquidityBot:
 
     def __init__(
         self,
-        market: str = "UBTC/USDC",
+        market: str = "BTC/USDC",
         size_min: float = 5,
         size_max: float = 10,
         spread: float = 0.0002,
@@ -46,18 +47,24 @@ class SpotLiquidityBot:
         self.info = Info(BASE_URL)
         self.address = WALLET_ADDRESS
 
+        # Logs vorbereiten
+        log_file = os.path.join("logs", log_file)
+        volume_log_file = os.path.join("logs", volume_log_file)
+
         logging.basicConfig(
-            filename=log_file,
             level=logging.INFO,
             format="[%(asctime)s] %(message)s",
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler(sys.stdout)
+            ]
         )
 
         self.logger = logging.getLogger("bot")
-
         self.volume_log = open(volume_log_file, "a")
         self.processed_fills: set[str] = set()
 
-        # Subscribe to BBO updates via websocket
+        # BBO abonnieren
         self.info.subscribe({"type": "bbo", "coin": self.market}, self._on_bbo)
 
     # ------------------------------------------------------------------
@@ -66,7 +73,8 @@ class SpotLiquidityBot:
         self.logger.info(msg)
 
     def _on_bbo(self, msg) -> None:
-        """Callback for websocket BBO updates."""
+        """Callback für BBO-Updates."""
+        print(f"[DEBUG] BBO erhalten: {msg}")
         bid, ask = msg["data"]["bbo"]
         with self.lock:
             if bid is not None:
@@ -76,7 +84,6 @@ class SpotLiquidityBot:
             if self.dynamic_reprice_on_bbo:
                 self._dynamic_reprice()
 
-    # ------------------------------------------------------------------
     def _mid_price(self) -> float | None:
         if self.best_bid is not None and self.best_ask is not None:
             return (self.best_bid + self.best_ask) / 2
@@ -220,7 +227,6 @@ class SpotLiquidityBot:
                 self.open_orders.pop(oid, None)
 
     def _dynamic_reprice(self) -> None:
-        """Reprice orders using the latest mid price on each BBO update."""
         mid = self._mid_price()
         if mid is None:
             return
@@ -232,7 +238,6 @@ class SpotLiquidityBot:
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
 
-    # ------------------------------------------------------------------
     def run(self) -> None:
         self._log("Bot started")
         while True:
