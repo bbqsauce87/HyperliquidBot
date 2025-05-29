@@ -426,31 +426,27 @@ class SpotLiquidityBot:
         self.reprice_orders()
 
     def cancel_all_open_orders(self) -> None:
-        """Cancel any resting orders on the account before trading starts."""
+        """Cancel any resting orders across **all** markets before trading starts."""
         self._log("Checking for leftover open orders...")
+
         try:
             open_os = self.info.open_orders(self.address)
         except Exception as exc:
             self._log(f"Failed to fetch open orders on startup: {exc}")
             return
 
-        cancels = [
-            {"coin": o["coin"], "oid": o["oid"]}
-            for o in open_os
-            if o.get("coin") == self.coin_code and o.get("oid") is not None
-        ]
-        if not cancels:
+        if not open_os:
             self._log("No open orders found.")
             self.open_orders.clear()
             return
 
         try:
-            resp = self.exchange.bulk_cancel(cancels)
-            self._log(f"Startup bulk cancel response: {resp}")
+            resp = self.exchange.schedule_cancel(None)
+            self._log(f"Sent schedule_cancel action: {resp}")
         except Exception as exc:
-            self._log(f"Error bulk canceling orders: {exc}")
+            self._log(f"Error sending schedule_cancel: {exc}")
 
-        # give the API a moment to process and then refresh local state
+        # give the API a moment to process cancellations and refresh local state
         time.sleep(1)
         self.load_open_orders()
 
