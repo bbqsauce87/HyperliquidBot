@@ -106,9 +106,11 @@ a buy for `0.001` BTC at `90,000` USDC right after launch.
 
 On every startup the bot also cleans up any open orders that may still
 be resting on the exchange. This ensures stale orders don't consume
-capital before new quotes are placed.
-After the cleanup the bot refreshes its internal state with any orders
-that remain so the expiration timer works even across restarts.
+capital before new quotes are placed.  The cleanup now uses the SDK's
+`schedule_cancel(None)` method so **all** markets are cleared, mirroring
+the "Cancel All" button in the Hyperliquid UI.  After the cleanup the bot
+refreshes its internal state with any orders that remain so the
+expiration timer works even across restarts.
 
 ## Repricing behaviour
 
