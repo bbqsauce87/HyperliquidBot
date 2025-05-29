@@ -36,6 +36,8 @@ class SpotLiquidityBot:
         crash_window: int = 60,
         log_file: str = "trade_log.txt",
         volume_log_file: str = "volume_log.txt",
+        start_order_price: float | None = None,
+        start_order_size: float | None = None,
     ) -> None:
 
         self.market = market
@@ -55,6 +57,9 @@ class SpotLiquidityBot:
         self.crash_threshold = crash_threshold
         self.crash_window = crash_window
         self.price_history: deque[tuple[float, float]] = deque()
+
+        self.start_order_price = start_order_price
+        self.start_order_size = start_order_size
 
         # Inventar-Management
         self.max_btc_position = max_btc_position
@@ -88,6 +93,8 @@ class SpotLiquidityBot:
         self.volume_log = open(volume_log_file, "a")
 
         self._log(f"Bot init. coin_code={self.coin_code}, order={usd_order_size}USD, spread={spread}, maxPos={max_btc_position}")
+        # Clean up any stale orders before starting
+        self.cancel_all_open_orders()
         # Subscribe to BBO
         self.info.subscribe({"type": "bbo", "coin": self.market}, self._on_bbo)
 
@@ -130,6 +137,29 @@ class SpotLiquidityBot:
 
     def _round_price(self, raw_px: float) -> float:
         return round(raw_px / self.price_tick) * self.price_tick
+
+    def _place_startup_order(self, mid: float | None) -> None:
+        """Place a one-off test order when the bot starts."""
+        if self.start_order_price is None or self.start_order_size is None:
+            return
+
+        price = self.start_order_price
+        size = self.start_order_size
+
+        # Determine side from the provided price relative to mid, defaulting to buy
+        side = "buy"
+        if mid is not None and price > mid:
+            side = "sell"
+
+        oid = self._place_order(side, price, size)
+        if oid:
+            self.open_orders[oid] = {
+                "side": side,
+                "price": price,
+                "size": size,
+                "timestamp": time.time(),
+                "coin": self.coin_code,
+            }
 
     # ----------------------
     # Inventory & Spreads
