@@ -28,7 +28,7 @@ class SpotLiquidityBot:
         check_interval: int = 5,
         reprice_threshold: float = 0.005,
         dynamic_reprice_on_bbo: bool = False,
-        debug: bool = True,
+        debug: bool = False,
         price_tick: float = 1.0,
         max_order_age: int = 60,
         max_btc_position: float = 0.1,
@@ -73,7 +73,7 @@ class SpotLiquidityBot:
         log_file = os.path.join("logs", log_file)
         volume_log_file = os.path.join("logs", volume_log_file)
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG if debug else logging.INFO,
             format="[%(asctime)s] %(message)s",
             handlers=[
                 logging.FileHandler(log_file),
@@ -87,16 +87,20 @@ class SpotLiquidityBot:
         # Subscribe to BBO
         self.info.subscribe({"type": "bbo", "coin": self.market}, self._on_bbo)
 
-    def _log(self, msg: str) -> None:
-        print(msg)
-        self.logger.info(msg)
+    def _log(self, msg: str, level: int = logging.INFO) -> None:
+        if level == logging.DEBUG and not self.debug:
+            return
+        if level >= logging.INFO:
+            print(msg)
+            self.logger.info(msg)
+        else:
+            self.logger.debug(msg)
 
     # ----------------------
     # BBO / Price logic
     # ----------------------
     def _on_bbo(self, msg) -> None:
-        if self.debug:
-            self._log(f"[DEBUG] BBO => {msg}")
+        self._log(f"BBO => {msg}", logging.DEBUG)
         bid, ask = msg["data"]["bbo"]
 
         with self.lock:
@@ -158,8 +162,10 @@ class SpotLiquidityBot:
             return None
         is_buy = (side.lower() == "buy")
 
-        if self.debug:
-            self._log(f"[DEBUG] place_order => side={side}, px={px}, size={size}")
+        self._log(
+            f"place_order => side={side}, px={px}, size={size}",
+            logging.DEBUG,
+        )
 
         try:
             resp = self.exchange.order(
@@ -173,13 +179,13 @@ class SpotLiquidityBot:
             self._log(f"Exception place_order => {e}")
             return None
 
-        self._log(f"Full order resp => {resp}")
+        self._log(f"Full order resp => {resp}", logging.DEBUG)
 
         if resp.get("status") == "ok":
             data = resp["response"]["data"]
             st_list = data.get("statuses", [])
             if not st_list:
-                self._log("No statuses => possibly error.")
+                self._log("No statuses => possibly error.", logging.DEBUG)
                 return None
             st = st_list[0]
             if "resting" in st:
@@ -205,13 +211,13 @@ class SpotLiquidityBot:
     def cancel_order(self, oid: int) -> None:
         info = self.open_orders.get(oid)
         if not info:
-            self._log(f"cancel_order => unknown oid={oid}")
+            self._log(f"cancel_order => unknown oid={oid}", logging.DEBUG)
             return
         c = info["coin"]  # e.g. "@142"
 
         try:
             resp = self.exchange.cancel(c, oid)
-            self._log(f"Cancel resp => {resp}")
+            self._log(f"Cancel resp => {resp}", logging.DEBUG)
             if resp.get("status") == "ok":
                 self._log(f"Canceled oid={oid}")
             else:
@@ -267,7 +273,10 @@ class SpotLiquidityBot:
     def check_fills(self) -> None:
         chain_orders = self._fetch_open_orders()
         if not chain_orders:
-            self._log("check_fills => no open orders from exchange or error. skip.")
+            self._log(
+                "check_fills => no open orders from exchange or error. skip.",
+                logging.DEBUG,
+            )
             self._record_fills()
             return
 
@@ -368,8 +377,7 @@ class SpotLiquidityBot:
     def ensure_orders(self) -> None:
         mid = self._mid_price()
         if not mid:
-            if self.debug:
-                self._log("ensure_orders => no mid, skip.")
+            self._log("ensure_orders => no mid, skip.", logging.DEBUG)
             return
 
         sides = {o["side"] for o in self.open_orders.values()}
@@ -412,7 +420,10 @@ class SpotLiquidityBot:
             old = info["price"]
             dev = abs(mid - old)/max(old, 1e-9)
             if dev > self.reprice_threshold:
-                self._log(f"Reprice => oid={oid}, old={old}, mid={mid}, dev={dev}")
+                self._log(
+                    f"Reprice => oid={oid}, old={old}, mid={mid}, dev={dev}",
+                    logging.DEBUG,
+                )
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
 
@@ -424,7 +435,10 @@ class SpotLiquidityBot:
         for oid, info in list(self.open_orders.items()):
             age = now - info["timestamp"]
             if age > self.max_order_age:
-                self._log(f"cancel_expired => oid={oid}, age={age:.1f}s")
+                self._log(
+                    f"cancel_expired => oid={oid}, age={age:.1f}s",
+                    logging.DEBUG,
+                )
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
 
@@ -435,7 +449,7 @@ class SpotLiquidityBot:
     # Bulk-cancel etc.
     # ----------------------
     def cancel_all_open_orders(self) -> None:
-        self._log("cancel_all_open_orders => fetch open orders.")
+        self._log("cancel_all_open_orders => fetch open orders.", logging.DEBUG)
         try:
             open_os = self.info.open_orders(self.address)
         except Exception as exc:
@@ -455,7 +469,7 @@ class SpotLiquidityBot:
         if cancels:
             try:
                 resp = self.exchange.bulk_cancel(cancels)
-                self._log(f"bulk_cancel => {resp}")
+                self._log(f"bulk_cancel => {resp}", logging.DEBUG)
             except Exception as exc:
                 self._log(f"Error bulk_cancel => {exc}")
 
@@ -481,7 +495,7 @@ if __name__ == "__main__":
         usd_order_size=20.0,
         spread=0.0004,
         price_tick=1.0,
-        debug=True,
+        debug=False,
         max_order_age=60,
         max_btc_position=0.1,
     )
