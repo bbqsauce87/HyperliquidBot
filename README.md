@@ -115,8 +115,13 @@ is `100`, meaning each order is for about one hundred USDC.
 bot = SpotLiquidityBot(usd_order_size=100.0,
                        spread=0.0004,
                        max_order_age=60,
-                       price_expiry_threshold=500)
+                       price_expiry_threshold=500,
+                       extra_sell_levels=2)
 ```
+
+`extra_sell_levels` controls how many additional sell orders are layered above
+the reference price when the market drops. These extra orders help capture
+partial profits if the price rebounds after a sharp decline.
 
 `spread=0.0004` means orders are quoted 0.04% away from the mid price
 on each side. This small buffer keeps them from filling immediately
