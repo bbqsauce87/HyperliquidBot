@@ -109,10 +109,10 @@ bot.
 The bot sizes orders by USD value using the `usd_order_size` parameter.
 For each quote the base asset amount is computed from the current price
 so that the order is worth approximately this many dollars.  The default
-is `20`, meaning each order is for about twenty USDC.
+is `200`, meaning each order is for about two hundred USDC.
 
 ```python
-bot = SpotLiquidityBot(usd_order_size=20.0,
+bot = SpotLiquidityBot(usd_order_size=200.0,
                        spread=0.0004,
                        max_order_age=60)
 ```
