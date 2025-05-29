@@ -31,7 +31,7 @@ class SpotLiquidityBot:
         dynamic_reprice_on_bbo: bool = False,
         debug: bool = True,
         price_tick: float = 1.0,
-        max_order_age: int = 60,
+        max_order_age: int = 90,
         max_btc_position: float = 0.1,
         crash_threshold: float = 0.05,
         crash_window: int = 60,
@@ -525,7 +525,7 @@ if __name__ == "__main__":
         spread=0.0004,
         price_tick=1.0,
         debug=True,
-        max_order_age=60,
+        max_order_age=90,
         max_btc_position=0.1,
     )
     bot.run()
