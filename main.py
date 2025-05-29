@@ -451,17 +451,22 @@ class SpotLiquidityBot:
             self.open_orders.clear()
             return
 
+        cancels = []
         for o in open_os:
             coin = o.get("coin")
             oid = o.get("oid")
             if coin is None or oid is None:
                 continue
+            cancels.append({"coin": coin, "oid": oid})
+
+        if cancels:
             try:
-                # Use the same pattern as individual cancellations from the SDK
-                resp = self.exchange.cancel(coin, oid)
-                self._log(f"Cancel response for coin={coin} oid={oid}: {resp}")
+                resp = self.exchange.bulk_cancel(cancels)
+                self._log(f"Bulk cancel response: {resp}")
             except Exception as exc:
-                self._log(f"Error cancelling order oid={oid} coin={coin}: {exc}")
+                self._log(f"Error during bulk cancel: {exc}")
+        else:
+            self._log("No cancelable orders found.")
 
         # give the API a moment to process cancellations and refresh local state
         time.sleep(1)
