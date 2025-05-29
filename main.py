@@ -231,23 +231,24 @@ class SpotLiquidityBot:
         except Exception as exc:
             self._log(f"Failed to fetch open orders => {exc}")
             return
-        self.open_orders.clear()
-        for o in raw:
-            oid = o.get("oid")
-            if oid is None:
-                continue
-            side = "buy" if o.get("side") == "B" else "sell"
-            px = float(o.get("limitPx", 0.0))
-            sz = float(o.get("sz", 0.0))
-            c = o.get("coin")  # e.g. "@142"
-            ts = o.get("timestamp", time.time()*1000)/1000.0
-            self.open_orders[oid] = {
-                "side": side,
-                "price": px,
-                "size": sz,
-                "timestamp": ts,
-                "coin": c
-            }
+        with self.lock:
+            self.open_orders.clear()
+            for o in raw:
+                oid = o.get("oid")
+                if oid is None:
+                    continue
+                side = "buy" if o.get("side") == "B" else "sell"
+                px = float(o.get("limitPx", 0.0))
+                sz = float(o.get("sz", 0.0))
+                c = o.get("coin")  # e.g. "@142"
+                ts = o.get("timestamp", time.time()*1000)/1000.0
+                self.open_orders[oid] = {
+                    "side": side,
+                    "price": px,
+                    "size": sz,
+                    "timestamp": ts,
+                    "coin": c
+                }
 
     # ------------------------------------------------------------------
     def check_fills(self) -> None:
@@ -257,20 +258,50 @@ class SpotLiquidityBot:
             self._record_fills()
             return
 
-        # walk local open_orders
-        for oid, info in list(self.open_orders.items()):
-            chain_info = chain_orders.get(oid)
-            if chain_info:
-                remain = float(chain_info.get("sz", 0.0))
-                if remain < info["size"]:
-                    filled = info["size"] - remain
-                    self._log(f"Partial fill => oid={oid}, side={info['side']}, filled={filled}, remain={remain}")
-                    self.open_orders[oid]["size"] = remain
-                    # Opposite side => place a new 20$ order
+        with self.lock:
+            # walk local open_orders
+            for oid, info in list(self.open_orders.items()):
+                chain_info = chain_orders.get(oid)
+                if chain_info:
+                    remain = float(chain_info.get("sz", 0.0))
+                    if remain < info["size"]:
+                        filled = info["size"] - remain
+                        self._log(
+                            f"Partial fill => oid={oid}, side={info['side']}, filled={filled}, remain={remain}"
+                        )
+                        self.open_orders[oid]["size"] = remain
+                        # Opposite side => place a new 20$ order
+                        mid = self._mid_price()
+                        if mid:
+                            new_side = "sell" if info["side"] == "buy" else "buy"
+                            px = (
+                                self._round_price(mid * (1 + self.spread))
+                                if new_side == "sell"
+                                else self._round_price(mid * (1 - self.spread))
+                            )
+                            new_sz = round(self.usd_order_size / px, self.decimals)
+                            new_id = self._place_order(new_side, px, new_sz)
+                            if new_id:
+                                self.open_orders[new_id] = {
+                                    "side": new_side,
+                                    "price": px,
+                                    "size": new_sz,
+                                    "timestamp": time.time(),
+                                    "coin": self.coin_code,
+                                }
+                else:
+                    # fully filled or canceled
+                    self._log(
+                        f"Order done => oid={oid}, side={info['side']} px={info['price']} sz={info['size']}"
+                    )
                     mid = self._mid_price()
                     if mid:
-                        new_side = "sell" if info["side"]=="buy" else "buy"
-                        px = self._round_price(mid * (1+self.spread)) if new_side=="sell" else self._round_price(mid*(1-self.spread))
+                        new_side = "sell" if info["side"] == "buy" else "buy"
+                        px = (
+                            self._round_price(mid * (1 + self.spread))
+                            if new_side == "sell"
+                            else self._round_price(mid * (1 - self.spread))
+                        )
                         new_sz = round(self.usd_order_size / px, self.decimals)
                         new_id = self._place_order(new_side, px, new_sz)
                         if new_id:
@@ -281,29 +312,13 @@ class SpotLiquidityBot:
                                 "timestamp": time.time(),
                                 "coin": self.coin_code,
                             }
-            else:
-                # fully filled or canceled
-                self._log(f"Order done => oid={oid}, side={info['side']} px={info['price']} sz={info['size']}")
-                mid = self._mid_price()
-                if mid:
-                    new_side = "sell" if info["side"]=="buy" else "buy"
-                    px = self._round_price(mid*(1+self.spread)) if new_side=="sell" else self._round_price(mid*(1-self.spread))
-                    new_sz = round(self.usd_order_size / px, self.decimals)
-                    new_id = self._place_order(new_side, px, new_sz)
-                    if new_id:
-                        self.open_orders[new_id] = {
-                            "side": new_side,
-                            "price": px,
-                            "size": new_sz,
-                            "timestamp": time.time(),
-                            "coin": self.coin_code,
-                        }
-                self.open_orders.pop(oid, None)
+                    self.open_orders.pop(oid, None)
 
-        # remove local orders not on chain
-        self.open_orders = {
-            oid: v for oid,v in self.open_orders.items() if oid in chain_orders
-        }
+            # remove local orders not on chain
+            self.open_orders = {
+                oid: v for oid, v in self.open_orders.items() if oid in chain_orders
+            }
+
         # log fills
         self._record_fills()
 
