@@ -16,7 +16,7 @@ from config import WALLET_ADDRESS, WALLET_PRIVATE_KEY, BASE_URL
 
 class SpotLiquidityBot:
     """
-    Simple market-making bot for UBTC/USDC, placing exactly ~20 USD buy/sell orders
+    Simple market-making bot for UBTC/USDC, placing exactly ~100 USD buy/sell orders
     at a chosen spread. No random sizing, no scheduled auto-close.
     """
 
@@ -24,8 +24,8 @@ class SpotLiquidityBot:
         self,
         market: str = "UBTC/USDC",
         # Fixes for user:
-        # place EXACT 20$ orders => we compute size = 20 / price
-        usd_order_size: float = 20.0,    # ~20 USD
+        # place EXACT 100$ orders => we compute size = 100 / price
+        usd_order_size: float = 100.0,    # ~100 USD
         spread: float = 0.0004,         # e.g. 0.04%
         check_interval: int = 5,
         reprice_threshold: float = 0.005,
@@ -110,12 +110,12 @@ class SpotLiquidityBot:
 
     def _place_startup_order(self, mid: float) -> None:
         """
-        Place a single BUY order for ~20 USD at (mid*(1-0.0001)).
+        Place a single BUY order for ~100 USD at (mid*(1-0.0001)).
         """
         if mid is None:
             return
         px = self._round_price(mid * (1 - 0.0001))
-        # size = 20 / px
+        # size = 100 / px
         size = round(self.usd_order_size / px, self.decimals)
 
         self._log(f"Startup BUY => px={px}, size={size}")
@@ -270,7 +270,7 @@ class SpotLiquidityBot:
                             f"Partial fill => oid={oid}, side={info['side']}, filled={filled}, remain={remain}"
                         )
                         self.open_orders[oid]["size"] = remain
-                        # Opposite side => place a new 20$ order
+                        # Opposite side => place a new 100$ order
                         mid = self._mid_price()
                         if mid:
                             new_side = "sell" if info["side"] == "buy" else "buy"
@@ -346,7 +346,7 @@ class SpotLiquidityBot:
     # ------------------------------------------------------------------
     def ensure_orders(self) -> None:
         """
-        Make sure we have exactly 1 buy and 1 sell open, each ~20 USD at +/- spread around mid.
+        Make sure we have exactly 1 buy and 1 sell open, each ~100 USD at +/- spread around mid.
         """
         mid = self._mid_price()
         if not mid:
@@ -458,7 +458,7 @@ class SpotLiquidityBot:
 if __name__ == "__main__":
     bot = SpotLiquidityBot(
         market="UBTC/USDC",
-        usd_order_size=20.0,   # always ~20$ orders
+        usd_order_size=100.0,   # always ~100$ orders
         spread=0.0004,
         price_tick=1.0,
         debug=True,
