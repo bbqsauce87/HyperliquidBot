@@ -80,6 +80,21 @@ print(info.name_to_coin.keys())
 The bot itself is locked to the `UBTC/USDC` pair, but you may find the snippet
 above useful for reference.
 
+To quickly confirm your credentials and `BASE_URL` are set up correctly, try
+retrieving your open orders:
+
+```python
+from hyperliquid.info import Info
+
+info = Info(BASE_URL, skip_ws=True)
+print(info.open_orders(WALLET_ADDRESS))
+```
+
+If this prints a list (even an empty one) then the Hyperliquid API is
+reachable.  See
+[`hyperliquid-python-sdk/examples/cancel_open_orders.py`](hyperliquid-python-sdk/examples/cancel_open_orders.py)
+for a more complete example that cancels any resting orders.
+
 ## Usage
 
 The bot is started by running `main.py` and exclusively trades the
