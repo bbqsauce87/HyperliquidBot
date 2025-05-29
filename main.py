@@ -37,7 +37,9 @@ class SpotLiquidityBot:
         max_order_age: int = 60,
         price_expiry_threshold: float = 500.0,
         max_btc_position: float = 0.1,
-        
+
+        extra_sell_levels: int = 0,
+
         # Crash detection config:
         crash_threshold: float = 0.01,    # 1% Drop
         crash_window: int = 60,          # 60s lookback
@@ -62,6 +64,11 @@ class SpotLiquidityBot:
         self.price_tick = price_tick
         self.max_order_age = max_order_age
         self.price_expiry_threshold = price_expiry_threshold
+        self.extra_sell_levels = extra_sell_levels
+        self.sell_ref_price: float | None = None
+        self.extra_sell_orders: list[int] = []
+        self.base_sell_oid: int | None = None
+        self.base_buy_oid: int | None = None
 
         # Crash detection & cooldown
         self.crash_threshold = crash_threshold
@@ -204,6 +211,7 @@ class SpotLiquidityBot:
                 "timestamp": time.time(),
                 "coin": self.coin_code,
             }
+            self.base_buy_oid = oid
 
     def _place_order(self, side: str, px: float, size: float) -> int | None:
         if px <= 0 or size <= 0:
@@ -267,6 +275,24 @@ class SpotLiquidityBot:
                 self._log(f"Failed to cancel => {resp}")
         except Exception as e:
             self._log(f"Exception while cancel_order => {e}")
+
+    def cancel_all_open_orders(self) -> None:
+        if not self.open_orders:
+            return
+        cancels = [{"coin": info["coin"], "oid": oid} for oid, info in self.open_orders.items()]
+        try:
+            self.exchange.bulk_cancel(cancels)
+        except Exception as e:
+            self._log(f"bulk_cancel exception => {e}")
+        for oid in list(self.open_orders.keys()):
+            self.open_orders.pop(oid, None)
+            if oid == self.base_sell_oid:
+                self.base_sell_oid = None
+                self.sell_ref_price = None
+            if oid == self.base_buy_oid:
+                self.base_buy_oid = None
+            if oid in self.extra_sell_orders:
+                self.extra_sell_orders.remove(oid)
 
     # ----------------------
     # Checking/Loading Orders
@@ -353,6 +379,12 @@ class SpotLiquidityBot:
                                     "timestamp": time.time(),
                                     "coin": self.coin_code,
                                 }
+                                if new_side == "sell":
+                                    self.base_sell_oid = new_id
+                                    self.sell_ref_price = px
+                                    self.extra_sell_orders = []
+                                else:
+                                    self.base_buy_oid = new_id
                 else:
                     # fully filled or canceled
                     self._log(f"Order done => oid={oid}, side={info['side']} px={info['price']} sz={info['size']}")
@@ -377,9 +409,28 @@ class SpotLiquidityBot:
                                 "timestamp": time.time(),
                                 "coin": self.coin_code,
                             }
+                            if new_side == "sell":
+                                self.base_sell_oid = new_id
+                                self.sell_ref_price = px
+                                self.extra_sell_orders = []
+                            else:
+                                self.base_buy_oid = new_id
                     self.open_orders.pop(oid, None)
+                    if oid == self.base_sell_oid:
+                        self.base_sell_oid = None
+                        self.sell_ref_price = None
+                    if oid == self.base_buy_oid:
+                        self.base_buy_oid = None
+                    if oid in self.extra_sell_orders:
+                        self.extra_sell_orders.remove(oid)
 
             self.open_orders = {oid: o for oid, o in self.open_orders.items() if oid in chain_orders}
+            if self.base_sell_oid and self.base_sell_oid not in self.open_orders:
+                self.base_sell_oid = None
+                self.sell_ref_price = None
+            if self.base_buy_oid and self.base_buy_oid not in self.open_orders:
+                self.base_buy_oid = None
+            self.extra_sell_orders = [oid for oid in self.extra_sell_orders if oid in self.open_orders]
 
         self._record_fills()
 
@@ -423,15 +474,15 @@ class SpotLiquidityBot:
             self._log("ensure_orders => no mid, skip.", logging.DEBUG)
             return
 
-        sides = {o["side"] for o in self.open_orders.values()}
         buy_spread, sell_spread = self._get_spreads()
 
-        if "buy" not in sides:
+        if self.base_buy_oid is None or self.base_buy_oid not in self.open_orders:
             buy_px = self._round_price(mid * (1 - buy_spread))
             buy_sz = round(self.usd_order_size / buy_px, self.decimals)
             self._log(f"ensure_orders => place BUY px={buy_px}, size={buy_sz}")
             oid = self._place_order("buy", buy_px, buy_sz)
             if oid:
+                self.base_buy_oid = oid
                 self.open_orders[oid] = {
                     "side": "buy",
                     "price": buy_px,
@@ -440,12 +491,15 @@ class SpotLiquidityBot:
                     "coin": self.coin_code,
                 }
 
-        if "sell" not in sides:
+        if self.base_sell_oid is None or self.base_sell_oid not in self.open_orders:
             sell_px = self._round_price(mid * (1 + sell_spread))
             sell_sz = round(self.usd_order_size / sell_px, self.decimals)
             self._log(f"ensure_orders => place SELL px={sell_px}, size={sell_sz}")
             oid = self._place_order("sell", sell_px, sell_sz)
             if oid:
+                self.base_sell_oid = oid
+                self.sell_ref_price = sell_px
+                self.extra_sell_orders = []
                 self.open_orders[oid] = {
                     "side": "sell",
                     "price": sell_px,
@@ -453,6 +507,41 @@ class SpotLiquidityBot:
                     "timestamp": time.time(),
                     "coin": self.coin_code,
                 }
+
+        self._place_additional_sell_orders(mid)
+
+    def _place_additional_sell_orders(self, mid: float) -> None:
+        if self.extra_sell_levels <= 0:
+            return
+        if self.sell_ref_price is None:
+            return
+
+        levels_done = len(self.extra_sell_orders)
+        while levels_done < self.extra_sell_levels:
+            diff = self.sell_ref_price - mid
+            threshold = (levels_done + 1) * 2 * self.spread * mid
+            if diff >= threshold:
+                px = self._round_price(
+                    self.sell_ref_price + (levels_done + 1) * 2 * self.spread * mid
+                )
+                sz = round(self.usd_order_size / px, self.decimals)
+                self._log(
+                    f"place extra SELL level {levels_done+1} => px={px}, size={sz}",
+                    logging.DEBUG,
+                )
+                oid = self._place_order("sell", px, sz)
+                if oid:
+                    self.open_orders[oid] = {
+                        "side": "sell",
+                        "price": px,
+                        "size": sz,
+                        "timestamp": time.time(),
+                        "coin": self.coin_code,
+                    }
+                    self.extra_sell_orders.append(oid)
+                    levels_done += 1
+                    continue
+            break
 
     def reprice_orders(self) -> None:
         mid = self._mid_price()
@@ -465,6 +554,13 @@ class SpotLiquidityBot:
                 self._log(f"Reprice => oid={oid}, old={old}, mid={mid}, dev={dev}", logging.DEBUG)
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
+                if oid == self.base_sell_oid:
+                    self.base_sell_oid = None
+                    self.sell_ref_price = None
+                if oid == self.base_buy_oid:
+                    self.base_buy_oid = None
+                if oid in self.extra_sell_orders:
+                    self.extra_sell_orders.remove(oid)
 
     def cancel_expired_orders(self) -> None:
         now = time.time()
@@ -481,6 +577,13 @@ class SpotLiquidityBot:
                 )
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
+                if oid == self.base_sell_oid:
+                    self.base_sell_oid = None
+                    self.sell_ref_price = None
+                if oid == self.base_buy_oid:
+                    self.base_buy_oid = None
+                if oid in self.extra_sell_orders:
+                    self.extra_sell_orders.remove(oid)
 
     def _dynamic_reprice(self) -> None:
         self.reprice_orders()
