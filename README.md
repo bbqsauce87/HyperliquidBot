@@ -137,10 +137,11 @@ the next iteration of the main loop.
 
 ## Running tests
 
-Install the Python dependencies using `requirements.txt`:
+Install the Python dependencies using `requirements.txt` and the additional
+packages required for tests listed in `requirements-dev.txt`:
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt
 ```
 
 Then execute the test suite:

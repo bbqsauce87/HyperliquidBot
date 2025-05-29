@@ -1,0 +1,10 @@
+# Development and test dependencies
+requests==2.31.0
+pytest==8.3.4
+eth-account>=0.10.0,<0.14.0
+pytest-recording==0.13.2
+coverage==7.6.10
+pytest-cov==6.0.0
+vcrpy==7.0.0
+types-requests==2.31.0
+lz4==4.3
