@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+logs/
+trade_log.txt
+volume_log.txt
+
