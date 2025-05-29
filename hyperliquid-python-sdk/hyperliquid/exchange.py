@@ -235,6 +235,7 @@ class Exchange(API):
         cloid: Optional[Cloid] = None,
         builder: Optional[BuilderInfo] = None,
     ) -> Any:
+        coin = self.info.name_to_coin.get(coin, coin)
         address: str = self.wallet.address
         if self.account_address:
             address = self.account_address
