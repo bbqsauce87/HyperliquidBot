@@ -163,9 +163,10 @@ immediately after a best bid/offer update instead of waiting for the normal
 
 ## Order expiration
 
-Each order is tagged with a timestamp when placed.  If an order remains open
-longer than `max_order_age` seconds (default: `60`), it will be cancelled on
-the next iteration of the main loop.
+Each order is tagged with a timestamp when placed. If an order remains open
+longer than `max_order_age` seconds (default: `60`) **and** the mid price has
+moved at least `$500` away from the order's price, it will be cancelled on the
+next iteration of the main loop.
 
 
 ## Running tests
