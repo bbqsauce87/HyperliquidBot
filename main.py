@@ -29,7 +29,6 @@ class SpotLiquidityBot:
         check_interval: int = 5,
         reprice_threshold: float = 0.005,
         dynamic_reprice_on_bbo: bool = False,
-        debug: bool = True,
         price_tick: float = 1.0,
         max_order_age: int = 90,
         max_btc_position: float = 0.1,
@@ -51,7 +50,6 @@ class SpotLiquidityBot:
         self.check_interval = check_interval
         self.reprice_threshold = reprice_threshold
         self.dynamic_reprice_on_bbo = dynamic_reprice_on_bbo
-        self.debug = debug
         self.price_tick = price_tick
         self.max_order_age = max_order_age
         self.crash_threshold = crash_threshold
@@ -101,8 +99,6 @@ class SpotLiquidityBot:
     # BBO / Price logic
     # ----------------------
     def _on_bbo(self, msg) -> None:
-        if self.debug:
-            self._log(f"[DEBUG] BBO => {msg}")
         bid, ask = msg["data"]["bbo"]
 
         with self.lock:
@@ -170,9 +166,6 @@ class SpotLiquidityBot:
             self._log(f"Invalid px/size => px={px}, sz={size}, skip order")
             return None
         is_buy = (side.lower() == "buy")
-
-        if self.debug:
-            self._log(f"[DEBUG] place_order => side={side}, px={px}, size={size}")
 
         try:
             resp = self.exchange.order(
@@ -381,8 +374,6 @@ class SpotLiquidityBot:
     def ensure_orders(self) -> None:
         mid = self._mid_price()
         if not mid:
-            if self.debug:
-                self._log("ensure_orders => no mid, skip.")
             return
 
         sides = {o["side"] for o in self.open_orders.values()}
@@ -524,7 +515,6 @@ if __name__ == "__main__":
         usd_order_size=200.0,
         spread=0.0004,
         price_tick=1.0,
-        debug=True,
         max_order_age=90,
         max_btc_position=0.1,
     )
