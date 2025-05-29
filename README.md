@@ -128,3 +128,17 @@ Each order is tagged with a timestamp when placed.  If an order remains open
 longer than `max_order_age` seconds (default: `60`), it will be cancelled on
 the next iteration of the main loop.
 
+
+## Running tests
+
+Install the Python dependencies using `requirements.txt`:
+
+```bash
+pip install -r requirements.txt
+```
+
+Then execute the test suite:
+
+```bash
+pytest
+```
