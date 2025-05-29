@@ -1,7 +1,7 @@
 import logging
 import random
 import time
-from threading import Lock
+from threading import Lock, Thread
 import os
 import sys
 
@@ -483,9 +483,20 @@ class SpotLiquidityBot:
         time.sleep(1)
         self.load_open_orders()
 
+    def schedule_order_close(self, delay: int = 10) -> None:
+        """Close all open orders after a delay using :func:`cancel_all_open_orders`."""
+
+        def _delayed_close() -> None:
+            time.sleep(delay)
+            with self.lock:
+                self._log(f"Closing all orders after {delay}s startup delay")
+                self.cancel_all_open_orders()
+
+        Thread(target=_delayed_close, daemon=True).start()
+
     def run(self) -> None:
         self._log("Bot started (tickSize approach).")
-        self.cancel_all_open_orders()
+        self.schedule_order_close(10)
         while True:
             time.sleep(self.check_interval)
             with self.lock:
