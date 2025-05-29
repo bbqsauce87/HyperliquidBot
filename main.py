@@ -440,10 +440,21 @@ class SpotLiquidityBot:
         """Cancel any resting orders across **all** markets before trading starts."""
         self._log("Checking for leftover open orders...")
 
-        try:
-            open_os = self.info.open_orders(self.address)
-        except Exception as exc:
-            self._log(f"Failed to fetch open orders on startup: {exc}")
+        open_os = None
+        for attempt in range(1, 4):
+            try:
+                open_os = self.info.open_orders(self.address)
+                break
+            except Exception as exc:
+                self._log(
+                    f"Attempt {attempt} failed to fetch open orders: {exc}"
+                )
+                if attempt < 3:
+                    time.sleep(1)
+        if open_os is None:
+            self._log(
+                "Failed to fetch open orders after 3 attempts; skipping cleanup."
+            )
             return
 
         if not open_os:
