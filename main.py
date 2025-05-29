@@ -272,8 +272,8 @@ class SpotLiquidityBot:
     # ----------------------
     def check_fills(self) -> None:
         chain_orders = self._fetch_open_orders()
-        if not chain_orders:
-            self._log("check_fills => no open orders from exchange or error. skip.")
+        if chain_orders is None:
+            self._log("check_fills => error fetching open orders. skip.")
             self._record_fills()
             return
 
