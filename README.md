@@ -180,3 +180,18 @@ Then execute the test suite:
 ```bash
 pytest
 ```
+
+## Cancel all outstanding UBTC/USDC orders
+
+`cancel_orders.py` removes any open orders resting on the UBTC/USDC spot market. It
+only touches this specific market and leaves all others intact.
+
+Run it like any other helper script:
+
+```bash
+python cancel_orders.py
+```
+
+`WALLET_PRIVATE_KEY`, `WALLET_ADDRESS` and, optionally, `BASE_URL` must be set in
+your environment as described above.
+
