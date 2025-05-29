@@ -2,6 +2,7 @@ import logging
 import random
 import time
 from threading import Lock
+from collections import deque
 import os
 import sys
 
@@ -32,6 +33,8 @@ class SpotLiquidityBot:
         price_tick: float = 1.0,
         max_order_age: int = 60,
         max_btc_position: float = 0.1,
+        crash_threshold: float = 0.05,
+        crash_window: int = 60,
         log_file: str = "trade_log.txt",
         volume_log_file: str = "volume_log.txt",
     ) -> None:
@@ -51,6 +54,9 @@ class SpotLiquidityBot:
         self.debug = debug
         self.price_tick = price_tick
         self.max_order_age = max_order_age
+        self.crash_threshold = crash_threshold
+        self.crash_window = crash_window
+        self.price_history: deque[tuple[float, float]] = deque()
 
         # Inventar-Management
         self.max_btc_position = max_btc_position
@@ -104,6 +110,13 @@ class SpotLiquidityBot:
                 self.best_bid = float(bid["px"])
             if ask is not None:
                 self.best_ask = float(ask["px"])
+
+            mid_now = self._mid_price()
+            if mid_now is not None:
+                now = time.time()
+                self.price_history.append((now, mid_now))
+                while self.price_history and now - self.price_history[0][0] > self.crash_window:
+                    self.price_history.popleft()
 
             if not self.first_bbo_received and self.best_bid and self.best_ask:
                 self.first_bbo_received = True
@@ -462,6 +475,35 @@ class SpotLiquidityBot:
         self._log("cancel_all_open_orders => done.")
         self.load_open_orders()
 
+    def check_crash(self) -> None:
+        if len(self.price_history) < 2:
+            return
+        latest = self.price_history[-1][1]
+        highest = max(p for _, p in self.price_history)
+        if highest <= 0:
+            return
+        drop = (highest - latest) / highest
+        if drop >= self.crash_threshold:
+            self._log(
+                f"[CRASH] Detected drop of {drop*100:.2f}% within {self.crash_window}s"
+            )
+            self.cancel_all_open_orders()
+            if self.btc_balance > 0:
+                px = self.best_bid or latest
+                try:
+                    resp = self.exchange.order(
+                        self.market,
+                        False,
+                        self.btc_balance,
+                        px,
+                        {"limit": {"tif": "Ioc"}},
+                        reduce_only=True,
+                    )
+                    self._log(f"Crash sell resp => {resp}")
+                except Exception as exc:
+                    self._log(f"Crash sell exception => {exc}")
+            self.price_history.clear()
+
     def run(self) -> None:
         self._log("Bot started => with inventory + dynamic spread merges.")
         # Optional: self.cancel_all_open_orders()
@@ -472,6 +514,7 @@ class SpotLiquidityBot:
                 self.cancel_expired_orders()
                 self.reprice_orders()
                 self.ensure_orders()
+                self.check_crash()
             self.check_fills()
 
 
