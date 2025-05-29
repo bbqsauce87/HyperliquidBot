@@ -33,7 +33,7 @@ class SpotLiquidityBot:
         price_tick: float = 1.0,
         max_order_age: int = 90,
         max_btc_position: float = 0.1,
-        crash_threshold: float = 0.05,
+        crash_threshold: float = 0.01,
         crash_window: int = 60,
         log_file: str = "trade_log.txt",
         volume_log_file: str = "volume_log.txt",
@@ -489,19 +489,14 @@ class SpotLiquidityBot:
             )
             self.cancel_all_open_orders()
             if self.btc_balance > 0:
-                px = self.best_bid or latest
                 try:
-                    resp = self.exchange.order(
+                    resp = self.exchange.market_close(
                         self.market,
-                        False,
-                        self.btc_balance,
-                        px,
-                        {"limit": {"tif": "Ioc"}},
-                        reduce_only=True,
+                        sz=self.btc_balance,
                     )
-                    self._log(f"Crash sell resp => {resp}")
+                    self._log(f"Crash market close resp => {resp}")
                 except Exception as exc:
-                    self._log(f"Crash sell exception => {exc}")
+                    self._log(f"Crash market close exception => {exc}")
             self.price_history.clear()
 
     def run(self) -> None:
