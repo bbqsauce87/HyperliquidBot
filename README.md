@@ -114,7 +114,8 @@ is `100`, meaning each order is for about one hundred USDC.
 ```python
 bot = SpotLiquidityBot(usd_order_size=100.0,
                        spread=0.0004,
-                       max_order_age=60)
+                       max_order_age=60,
+                       price_expiry_threshold=500)
 ```
 
 `spread=0.0004` means orders are quoted 0.04% away from the mid price
@@ -157,7 +158,8 @@ immediately after a best bid/offer update instead of waiting for the normal
 Each order is tagged with a timestamp when placed. If an order remains open
 longer than `max_order_age` seconds (default: `60`) **and** the mid price has
 moved at least `$500` away from the order's price, it will be cancelled on the
-next iteration of the main loop.
+next iteration of the main loop. The `$500` value can be adjusted via the
+`price_expiry_threshold` parameter.
 
 
 ## Running tests

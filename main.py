@@ -35,6 +35,7 @@ class SpotLiquidityBot:
         debug: bool = False,
         price_tick: float = 1.0,
         max_order_age: int = 60,
+        price_expiry_threshold: float = 500.0,
         max_btc_position: float = 0.1,
         
         # Crash detection config:
@@ -60,6 +61,7 @@ class SpotLiquidityBot:
         self.debug = debug
         self.price_tick = price_tick
         self.max_order_age = max_order_age
+        self.price_expiry_threshold = price_expiry_threshold
 
         # Crash detection & cooldown
         self.crash_threshold = crash_threshold
@@ -471,8 +473,12 @@ class SpotLiquidityBot:
             return
         for oid, info in list(self.open_orders.items()):
             age = now - info["timestamp"]
-            if age > self.max_order_age:
-                self._log(f"cancel_expired => oid={oid}, age={age:.1f}s", logging.DEBUG)
+            deviation = abs(mid - info["price"])
+            if age > self.max_order_age and deviation >= self.price_expiry_threshold:
+                self._log(
+                    f"cancel_expired => oid={oid}, age={age:.1f}s dev={deviation}",
+                    logging.DEBUG,
+                )
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
 
@@ -543,6 +549,7 @@ if __name__ == "__main__":
         price_tick=1.0,
         debug=False,
         max_order_age=60,
+        price_expiry_threshold=500,
         max_btc_position=0.1,
         crash_threshold=0.01,    # 1%
         crash_window=60,         # 60s
