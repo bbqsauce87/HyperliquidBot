@@ -21,9 +21,20 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 # === ⚙️ Virtuelle Umgebung erstellen (falls nicht vorhanden) ===
 if [ ! -d "$VENV_DIR" ]; then
   echo "[INFO] Erstelle virtuelle Umgebung mit $PYTHON_VERSION..."
-  $PYTHON_VERSION -m venv $VENV_DIR
+  $PYTHON_VERSION -m venv "$VENV_DIR"
   echo "[INFO] Virtuelle Umgebung erstellt."
 fi
+
+# === 📦 Abhängigkeiten installieren ===
+echo "[INFO] Installiere hyperliquid-python-sdk..."
+"$VENV_DIR"/bin/pip install -e hyperliquid-python-sdk
+
+for req_file in requirements*.txt; do
+  if [ -f "$req_file" ]; then
+    echo "[INFO] Installiere Abhängigkeiten aus $req_file..."
+    "$VENV_DIR"/bin/pip install -r "$req_file"
+  fi
+done
 
 # === 📁 Log-Verzeichnis vorbereiten ===
 mkdir -p $LOG_DIR
