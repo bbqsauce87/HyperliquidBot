@@ -415,10 +415,19 @@ class SpotLiquidityBot:
 
     def cancel_expired_orders(self) -> None:
         now = time.time()
+        mid = self._mid_price()
         for oid, info in list(self.open_orders.items()):
             ts = info.get("timestamp")
-            if ts is not None and now - ts > self.max_order_age:
-                self._log(f"Order oid={oid} older than {self.max_order_age}s; canceling")
+            if ts is None:
+                continue
+            if now - ts <= self.max_order_age:
+                continue
+            if mid is None:
+                continue
+            if abs(mid - info["price"]) >= 500:
+                self._log(
+                    f"Order oid={oid} older than {self.max_order_age}s and price moved {abs(mid - info['price'])}; canceling"
+                )
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
 
