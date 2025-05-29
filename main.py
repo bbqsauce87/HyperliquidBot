@@ -1,7 +1,7 @@
 import logging
 import random
 import time
-from threading import Lock, Thread
+from threading import Lock
 import os
 import sys
 
@@ -15,64 +15,49 @@ from config import WALLET_ADDRESS, WALLET_PRIVATE_KEY, BASE_URL
 
 
 class SpotLiquidityBot:
-    """Simple market-making bot for the UBTC/USDC pair.
-
-    Orders are automatically capped so that their USD value does not
-    exceed ``max_usd_order_size``.
+    """
+    Simple market-making bot for UBTC/USDC, placing exactly ~20 USD buy/sell orders
+    at a chosen spread. No random sizing, no scheduled auto-close.
     """
 
     def __init__(
         self,
         market: str = "UBTC/USDC",
-        # Annahme: Minimale Größenschritte ~ 0.0001 UBTC, hier einfach 0.001–0.01 zum Test
-        size_min: float = 0.001,
-        size_max: float = 0.01,
-        # Spread z. B. 0.0002 = 0.02 %
-        spread: float = 0.0002,
+        # Fixes for user:
+        # place EXACT 20$ orders => we compute size = 20 / price
+        usd_order_size: float = 20.0,    # ~20 USD
+        spread: float = 0.0004,         # e.g. 0.04%
         check_interval: int = 5,
-        log_file: str = "trade_log.txt",
-        volume_log_file: str = "volume_log.txt",
         reprice_threshold: float = 0.005,
         dynamic_reprice_on_bbo: bool = False,
         debug: bool = True,
-        # Angenommene Tick Size (z. B. 1 USDC- Schritt). 
-        # Falls es 0.5 oder 0.1 sein soll, bitte anpassen.
         price_tick: float = 1.0,
-        max_usd_order_size: float = 50.0,
-        min_usd_order_size: float = 20.0,
         max_order_age: int = 60,
+        log_file: str = "trade_log.txt",
+        volume_log_file: str = "volume_log.txt",
     ) -> None:
-        """Create a new bot instance.
-
-        Parameters are largely self explanatory. ``max_usd_order_size`` limits
-        the value of any single order in USDC, while ``min_usd_order_size``
-        ensures orders are not rejected for being too small.
-        """
 
         self.market = market
         self.info = Info(BASE_URL)
-
-        # Determine the allowed precision for order sizes of this market
         asset = self.info.name_to_asset(market)
         self.decimals = self.info.asset_to_sz_decimals[asset]
+        # E.g. coin_code = "@142"
         self.coin_code = self.info.name_to_coin.get(market, market.split("/")[0])
 
-        # Round provided size bounds to the permitted precision
-        self.size_min = round(size_min, self.decimals)
-        self.size_max = round(size_max, self.decimals)
+        self.usd_order_size = usd_order_size
         self.spread = spread
         self.check_interval = check_interval
         self.reprice_threshold = reprice_threshold
         self.dynamic_reprice_on_bbo = dynamic_reprice_on_bbo
         self.debug = debug
         self.price_tick = price_tick
-        self.max_usd_order_size = max_usd_order_size
-        self.min_usd_order_size = min_usd_order_size
         self.max_order_age = max_order_age
 
         self.best_bid: float | None = None
         self.best_ask: float | None = None
+        # open_orders = {oid: { side, price, size, timestamp, coin }}
         self.open_orders: dict[int, dict] = {}
+        self.processed_fills: set[str] = set()
         self.first_bbo_received = False
         self.lock = Lock()
 
@@ -91,412 +76,361 @@ class SpotLiquidityBot:
                 logging.StreamHandler(sys.stdout)
             ]
         )
-
         self.logger = logging.getLogger("bot")
         self.volume_log = open(volume_log_file, "a")
-        self.processed_fills: set[str] = set()
 
-        self._log("Bot initialized (tickSize fix).")
-
-        # ACHTUNG: info.balances() existiert anscheinend nicht in deiner SDK-Version
-        # => wir lassen diesen Teil weg oder implementieren "info.balances()" selbst, falls verfügbar.
-
+        self._log(f"Bot init. coin_code={self.coin_code}, fixed USD order = {usd_order_size}, spread={spread}")
+        # Subscribe to BBO
         self.info.subscribe({"type": "bbo", "coin": self.market}, self._on_bbo)
 
     def _log(self, msg: str) -> None:
         print(msg)
         self.logger.info(msg)
 
+    # ------------------------------------------------------------------
     def _on_bbo(self, msg) -> None:
         if self.debug:
-            self._log(f"[DEBUG] BBO erhalten: {msg}")
-
+            self._log(f"[DEBUG] BBO => {msg}")
         bid, ask = msg["data"]["bbo"]
+
         with self.lock:
             if bid is not None:
                 self.best_bid = float(bid["px"])
             if ask is not None:
                 self.best_ask = float(ask["px"])
 
-            if not self.first_bbo_received and (self.best_bid and self.best_ask):
+            if not self.first_bbo_received and self.best_bid and self.best_ask:
                 self.first_bbo_received = True
                 mid_ = self._mid_price()
-                self._log(f"Received first BBO: bid={self.best_bid} ask={self.best_ask} mid={mid_}")
+                self._log(f"Received first BBO => mid={mid_}")
                 self._place_startup_order(mid_)
 
             if self.dynamic_reprice_on_bbo:
                 self._dynamic_reprice()
 
     def _place_startup_order(self, mid: float) -> None:
+        """
+        Place a single BUY order for ~20 USD at (mid*(1-0.0001)).
+        """
         if mid is None:
             return
-        startup_price = self._round_price(mid * (1 - 0.0001))
-        startup_size = 0.005  # z. B. 0.005 UBTC
-        self._log(f"Placing startup order: buy {startup_size} @ {startup_price}")
-        oid = self._place_order("buy", startup_price, startup_size)
+        px = self._round_price(mid * (1 - 0.0001))
+        # size = 20 / px
+        size = round(self.usd_order_size / px, self.decimals)
+
+        self._log(f"Startup BUY => px={px}, size={size}")
+        oid = self._place_order("buy", px, size)
         if oid:
             self.open_orders[oid] = {
                 "side": "buy",
-                "price": startup_price,
-                "size": startup_size,
+                "price": px,
+                "size": size,
                 "timestamp": time.time(),
+                "coin": self.coin_code,
             }
 
     def _mid_price(self) -> float | None:
-        if self.best_bid is not None and self.best_ask is not None:
+        if self.best_bid and self.best_ask:
             return (self.best_bid + self.best_ask) / 2
         return None
 
     def _round_price(self, raw_px: float) -> float:
-        """
-        Rundet den Preis an das Tick-Raster an.
-        Beispiel: price_tick=1 => 107340.26 -> 107340
-                  price_tick=0.5 => 107340.26 -> 107340.0
-        """
         return round(raw_px / self.price_tick) * self.price_tick
 
-    def _random_size(self) -> float:
-        return round(random.uniform(self.size_min, self.size_max), self.decimals)
-
-    def _place_order(self, side: str, raw_price: float, size: float) -> int | None:
-        # Preis an Tick anpassen
-        price = self._round_price(raw_price)
-        size = round(size, self.decimals)
-        usd_value = price * size
-        # Ensure the USD value of the order meets the configured minimum
-        if usd_value < self.min_usd_order_size:
-            min_size = round(self.min_usd_order_size / price, self.decimals)
-            if min_size * price > self.max_usd_order_size:
-                self._log(
-                    f"Order skipped: price={price} cannot satisfy USD bounds {self.min_usd_order_size}-{self.max_usd_order_size}"
-                )
-                return None
-            if self.debug:
-                self._log(
-                    f"[DEBUG] Increasing order size from {size} to {min_size} to meet min USD size"
-                )
-            size = min_size
-            usd_value = price * size
-        # Ensure the USD value of the order does not exceed the configured maximum
-        if usd_value > self.max_usd_order_size:
-            capped = round(self.max_usd_order_size / price, self.decimals)
-            if capped <= 0:
-                self._log(
-                    f"Order skipped: price={price} would exceed max USD size {self.max_usd_order_size}"
-                )
-                return None
-            if self.debug:
-                self._log(
-                    f"[DEBUG] Capping order size from {size} to {capped} due to max USD size"
-                )
-            size = capped
+    def _place_order(self, side: str, px: float, size: float) -> int | None:
+        """Place a single GTC limit-order. size in base coin, px in USDC."""
+        if px <= 0 or size <= 0:
+            self._log(f"Invalid px/size => px={px}, sz={size}, skip order")
+            return None
         is_buy = (side.lower() == "buy")
+
         if self.debug:
-            self._log(f"[DEBUG] Attempting order: side={side}, px={price}, sz={size}")
+            self._log(f"[DEBUG] place_order => side={side}, px={px}, size={size}")
 
         try:
             resp = self.exchange.order(
                 self.market,
                 is_buy,
                 size,
-                price,
+                px,
                 {"limit": {"tif": "Gtc"}},
             )
         except Exception as e:
-            self._log(f"Exception while placing order: {e}")
+            self._log(f"Exception place_order => {e}")
             return None
 
-        self._log(f"Full order response: {resp}")
+        self._log(f"Full order resp => {resp}")
 
         if resp.get("status") == "ok":
             data = resp["response"]["data"]
-            statuses = data.get("statuses", [])
-            if not statuses:
-                self._log("Order response has no statuses. Possibly an error.")
+            st_list = data.get("statuses", [])
+            if not st_list:
+                self._log("No statuses => possibly error.")
                 return None
-
-            status = statuses[0]
-            if "resting" in status:
-                oid = status["resting"]["oid"]
-                self._log(f"Placed {side} order oid={oid} price={price} size={size}")
+            st = st_list[0]
+            if "resting" in st:
+                oid = st["resting"]["oid"]
+                self._log(f"Placed {side} => oid={oid}, px={px}, size={size}")
                 return oid
-            if "filled" in status:
-                filled_qty = status["filled"]["totalSz"]
-                avg_price = status["filled"]["avgPx"]
-                self._log(f"{side.capitalize()} order instantly filled {filled_qty} @ {avg_price}")
-            if "error" in status:
-                self._log(f"Order error: {status['error']}")
-            if "rejected" in status:
-                self._log(f"Order was rejected: {status['rejected']['reason']}")
+            elif "filled" in st:
+                fill_qty = st["filled"]["totalSz"]
+                avg_px = st["filled"]["avgPx"]
+                self._log(f"{side.capitalize()} instantly filled => qty={fill_qty}, px={avg_px}")
+            elif "error" in st:
+                err = st["error"]
+                self._log(f"Order error => {err}")
+            elif "rejected" in st:
+                reason = st["rejected"]["reason"]
+                self._log(f"Order rejected => {reason}")
         else:
-            self._log(f"Order error (not 'ok'): {resp}")
+            self._log(f"Order not 'ok' => {resp}")
 
         return None
 
-    def _fetch_open_orders(self) -> dict[int, dict] | None:
-        """Return the current open orders for this wallet.
+    def cancel_order(self, oid: int) -> None:
+        """Cancel a single open order by looking up the coin in self.open_orders."""
+        info = self.open_orders.get(oid)
+        if not info:
+            self._log(f"cancel_order => unknown oid={oid}")
+            return
+        c = info["coin"]  # e.g. "@142"
 
-        If the request fails, ``None`` is returned so callers can
-        differentiate between "no open orders" and "request failed".
-        """
         try:
-            open_os = self.info.open_orders(self.address)
-            return {o["oid"]: o for o in open_os if o["coin"] == self.coin_code}
+            resp = self.exchange.cancel(c, oid)
+            self._log(f"Cancel resp => {resp}")
+            if resp.get("status") == "ok":
+                self._log(f"Canceled oid={oid}")
+            else:
+                self._log(f"Failed to cancel => {resp}")
         except Exception as e:
-            self._log(f"Exception fetching open_orders: {e}")
+            self._log(f"Exception while cancel_order => {e}")
+
+    # ------------------------------------------------------------------
+    def _fetch_open_orders(self) -> dict[int, dict] | None:
+        """Fetch all open orders from the API, store them by oid => data."""
+        try:
+            raw = self.info.open_orders(self.address)
+            results = {}
+            for o in raw:
+                oid = o.get("oid")
+                if oid is None:
+                    continue
+                results[oid] = o
+            return results
+        except Exception as e:
+            self._log(f"Exception fetching open_orders => {e}")
             return None
 
     def load_open_orders(self) -> None:
-        """Populate ``self.open_orders`` from the exchange state.
-
-        This is useful on startup so the bot is aware of any existing orders
-        and the expiration timer can clean them up if needed.
+        """
+        Optional: fill self.open_orders from remote state.
+        If you call this at startup, you'll sync local open_orders to the exchange side.
         """
         try:
             raw = self.info.open_orders(self.address)
         except Exception as exc:
-            self._log(f"Failed to fetch open orders: {exc}")
+            self._log(f"Failed to fetch open orders => {exc}")
             return
-
         self.open_orders.clear()
-        for order in raw:
-            if order.get("coin") != self.coin_code:
-                continue
-            oid = order.get("oid")
+        for o in raw:
+            oid = o.get("oid")
             if oid is None:
                 continue
-            side = "buy" if order.get("side") == "B" else "sell"
-            px = float(order.get("limitPx", 0.0))
-            sz = float(order.get("sz", 0.0))
-            ts = order.get("timestamp")
-            if ts is not None:
-                ts = ts / 1000.0  # api provides ms
-            else:
-                ts = time.time()
+            side = "buy" if o.get("side") == "B" else "sell"
+            px = float(o.get("limitPx", 0.0))
+            sz = float(o.get("sz", 0.0))
+            c = o.get("coin")  # e.g. "@142"
+            ts = o.get("timestamp", time.time()*1000)/1000.0
             self.open_orders[oid] = {
                 "side": side,
                 "price": px,
                 "size": sz,
                 "timestamp": ts,
+                "coin": c
             }
 
-    def cancel_order(self, oid: int) -> None:
-        try:
-            # Follow the official SDK pattern by passing the canonical coin name
-            # rather than the market pair when cancelling orders.
-            resp = self.exchange.cancel(self.coin_code, oid)
-            self._log(f"Cancel response: {resp}")
-            if resp.get("status") == "ok":
-                self._log(f"Canceled order oid={oid}")
-            else:
-                self._log(f"Failed to cancel oid={oid}: {resp}")
-        except Exception as e:
-            self._log(f"Exception while canceling order {oid}: {e}")
-
+    # ------------------------------------------------------------------
     def check_fills(self) -> None:
         chain_orders = self._fetch_open_orders()
-        if chain_orders is None:
-            self._log("check_fills: unable to fetch open orders; skipping check.")
+        if not chain_orders:
+            self._log("check_fills => no open orders from exchange or error. skip.")
             self._record_fills()
             return
+
+        # walk local open_orders
         for oid, info in list(self.open_orders.items()):
             chain_info = chain_orders.get(oid)
             if chain_info:
-                # Teil-Fill?
-                remaining = float(chain_info["sz"])
-                if remaining < info["size"]:
-                    filled = info["size"] - remaining
-                    self._log(f"Order partially filled: oid={oid}, side={info['side']}, filled={filled}, remain={remaining}")
-                    self.open_orders[oid]["size"] = remaining
-                    # Gegenseite
+                remain = float(chain_info.get("sz", 0.0))
+                if remain < info["size"]:
+                    filled = info["size"] - remain
+                    self._log(f"Partial fill => oid={oid}, side={info['side']}, filled={filled}, remain={remain}")
+                    self.open_orders[oid]["size"] = remain
+                    # Opposite side => place a new 20$ order
                     mid = self._mid_price()
-                    if mid is not None:
-                        new_side = "sell" if info["side"] == "buy" else "buy"
-                        px = self._round_price(mid * (1 + self.spread)) if new_side == "sell" else self._round_price(mid * (1 - self.spread))
-                        new_id = self._place_order(new_side, px, filled)
+                    if mid:
+                        new_side = "sell" if info["side"]=="buy" else "buy"
+                        px = self._round_price(mid * (1+self.spread)) if new_side=="sell" else self._round_price(mid*(1-self.spread))
+                        new_sz = round(self.usd_order_size / px, self.decimals)
+                        new_id = self._place_order(new_side, px, new_sz)
                         if new_id:
-                            chain_orders[new_id] = {
-                                "side": "B" if new_side == "buy" else "A"
-                            }
                             self.open_orders[new_id] = {
                                 "side": new_side,
                                 "price": px,
-                                "size": filled,
+                                "size": new_sz,
                                 "timestamp": time.time(),
+                                "coin": self.coin_code,
                             }
             else:
-                # Komplett gefüllt oder gecancelt
-                self._log(f"Order fully filled/canceled: oid={oid}, side={info['side']} px={info['price']} sz={info['size']}")
+                # fully filled or canceled
+                self._log(f"Order done => oid={oid}, side={info['side']} px={info['price']} sz={info['size']}")
                 mid = self._mid_price()
-                if mid is not None:
-                    new_side = "sell" if info["side"] == "buy" else "buy"
-                    px = self._round_price(mid * (1 + self.spread)) if new_side == "sell" else self._round_price(mid * (1 - self.spread))
-                    new_id = self._place_order(new_side, px, info["size"])
+                if mid:
+                    new_side = "sell" if info["side"]=="buy" else "buy"
+                    px = self._round_price(mid*(1+self.spread)) if new_side=="sell" else self._round_price(mid*(1-self.spread))
+                    new_sz = round(self.usd_order_size / px, self.decimals)
+                    new_id = self._place_order(new_side, px, new_sz)
                     if new_id:
-                        chain_orders[new_id] = {
-                            "side": "B" if new_side == "buy" else "A"
-                        }
                         self.open_orders[new_id] = {
                             "side": new_side,
                             "price": px,
-                            "size": info["size"],
+                            "size": new_sz,
                             "timestamp": time.time(),
+                            "coin": self.coin_code,
                         }
                 self.open_orders.pop(oid, None)
 
-        # Cleanup
-        self.open_orders = {oid: o for oid, o in self.open_orders.items() if oid in chain_orders}
+        # remove local orders not on chain
+        self.open_orders = {
+            oid: v for oid,v in self.open_orders.items() if oid in chain_orders
+        }
+        # log fills
         self._record_fills()
 
     def _record_fills(self) -> None:
         try:
             fills = self.info.user_fills(self.address)
-        except Exception as exc:
-            self._log(f"Error fetching fills: {exc}")
+        except Exception as e:
+            self._log(f"Error fetching fills => {e}")
             return
         coin = self.market.split("/")[0]
-        for fill in fills:
-            if fill.get("coin") != coin:
+        for f in fills:
+            if f.get("coin") != coin:
                 continue
-            h = fill.get("hash")
+            h = f.get("hash")
             if h in self.processed_fills:
                 continue
             self.processed_fills.add(h)
-            size = fill.get("filledSz") or fill.get("sz")
-            price = fill.get("avgPx") or fill.get("px")
-            fee = fill.get("fee")
-            line = f"{size},{price},{fee}\n"
+            sz = f.get("filledSz") or f.get("sz")
+            px = f.get("avgPx") or f.get("px")
+            fee = f.get("fee")
+            line = f"{sz},{px},{fee}\n"
             self.volume_log.write(line)
             self.volume_log.flush()
 
+    # ------------------------------------------------------------------
     def ensure_orders(self) -> None:
+        """
+        Make sure we have exactly 1 buy and 1 sell open, each ~20 USD at +/- spread around mid.
+        """
         mid = self._mid_price()
-        if mid is None:
+        if not mid:
             if self.debug:
-                self._log("ensure_orders: mid price is None, skipping.")
+                self._log("ensure_orders => no mid, skip.")
             return
-        sides = {info["side"] for info in self.open_orders.values()}
+
+        sides = {o["side"] for o in self.open_orders.values()}
 
         if "buy" not in sides:
-            buy_price = self._round_price(mid * (1 - self.spread))
-            buy_size = self._random_size()
-            self._log(f"ensure_orders: placing buy at {buy_price} size={buy_size}")
-            oid = self._place_order("buy", buy_price, buy_size)
+            buy_px = self._round_price(mid*(1-self.spread))
+            buy_sz = round(self.usd_order_size / buy_px, self.decimals)
+            self._log(f"ensure_orders => place BUY px={buy_px}, size={buy_sz}")
+            oid = self._place_order("buy", buy_px, buy_sz)
             if oid:
                 self.open_orders[oid] = {
                     "side": "buy",
-                    "price": buy_price,
-                    "size": buy_size,
+                    "price": buy_px,
+                    "size": buy_sz,
                     "timestamp": time.time(),
+                    "coin": self.coin_code,
                 }
 
         if "sell" not in sides:
-            sell_price = self._round_price(mid * (1 + self.spread))
-            sell_size = self._random_size()
-            self._log(f"ensure_orders: placing sell at {sell_price} size={sell_size}")
-            oid = self._place_order("sell", sell_price, sell_size)
+            sell_px = self._round_price(mid*(1+self.spread))
+            sell_sz = round(self.usd_order_size / sell_px, self.decimals)
+            self._log(f"ensure_orders => place SELL px={sell_px}, size={sell_sz}")
+            oid = self._place_order("sell", sell_px, sell_sz)
             if oid:
                 self.open_orders[oid] = {
                     "side": "sell",
-                    "price": sell_price,
-                    "size": sell_size,
+                    "price": sell_px,
+                    "size": sell_sz,
                     "timestamp": time.time(),
+                    "coin": self.coin_code,
                 }
 
     def reprice_orders(self) -> None:
         mid = self._mid_price()
-        if mid is None:
+        if not mid:
             return
         for oid, info in list(self.open_orders.items()):
-            old_price = info["price"]
-            dev = abs(mid - old_price) / (old_price if old_price != 0 else 1.0)
+            old = info["price"]
+            dev = abs(mid - old)/max(old, 1e-9)
             if dev > self.reprice_threshold:
-                self._log(f"Repricing order oid={oid}, old_price={old_price}, mid={mid}, dev={dev}")
+                self._log(f"Reprice => oid={oid}, old={old}, mid={mid}, dev={dev}")
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
 
     def cancel_expired_orders(self) -> None:
         now = time.time()
         mid = self._mid_price()
+        if not mid:
+            return
         for oid, info in list(self.open_orders.items()):
-            ts = info.get("timestamp")
-            if ts is None:
-                continue
-            if now - ts <= self.max_order_age:
-                continue
-            if mid is None:
-                continue
-            if abs(mid - info["price"]) >= 500:
-                self._log(
-                    f"Order oid={oid} older than {self.max_order_age}s and price moved {abs(mid - info['price'])}; canceling"
-                )
+            age = now - info["timestamp"]
+            if age > self.max_order_age:
+                self._log(f"cancel_expired => oid={oid}, age={age:.1f}s")
                 self.cancel_order(oid)
                 self.open_orders.pop(oid, None)
 
     def _dynamic_reprice(self) -> None:
         self.reprice_orders()
 
+    # Optional: Du kannst diesen Aufruf weglassen, wenn du NICHT beim Start alles canceln willst
     def cancel_all_open_orders(self) -> None:
-        """Cancel any resting orders across **all** markets before trading starts."""
-        self._log("Checking for leftover open orders...")
-
-        open_os = None
-        for attempt in range(1, 4):
-            try:
-                open_os = self.info.open_orders(self.address)
-                break
-            except Exception as exc:
-                self._log(
-                    f"Attempt {attempt} failed to fetch open orders: {exc}"
-                )
-                if attempt < 3:
-                    time.sleep(1)
-        if open_os is None:
-            self._log(
-                "Failed to fetch open orders after 3 attempts; skipping cleanup."
-            )
+        self._log("cancel_all_open_orders => fetch open orders.")
+        try:
+            open_os = self.info.open_orders(self.address)
+        except Exception as exc:
+            self._log(f"Failed to fetch open orders => {exc}")
             return
-
         if not open_os:
-            self._log("No open orders found.")
-            self.open_orders.clear()
+            self._log("No open orders => done.")
             return
 
         cancels = []
         for o in open_os:
-            coin = o.get("coin")
+            c = o.get("coin")
             oid = o.get("oid")
-            if coin is None or oid is None:
-                continue
-            cancels.append({"coin": coin, "oid": oid})
+            if c and oid:
+                cancels.append({"coin": c, "oid": oid})
 
         if cancels:
             try:
                 resp = self.exchange.bulk_cancel(cancels)
-                self._log(f"Bulk cancel response: {resp}")
+                self._log(f"bulk_cancel => {resp}")
             except Exception as exc:
-                self._log(f"Error during bulk cancel: {exc}")
-        else:
-            self._log("No cancelable orders found.")
+                self._log(f"Error bulk_cancel => {exc}")
 
-        # give the API a moment to process cancellations and refresh local state
-        time.sleep(1)
+        self._log("cancel_all_open_orders => done.")
+        # time.sleep(1)
         self.load_open_orders()
 
-    def schedule_order_close(self, delay: int = 10) -> None:
-        """Close all open orders after a delay using :func:`cancel_all_open_orders`."""
-
-        def _delayed_close() -> None:
-            time.sleep(delay)
-            with self.lock:
-                self._log(f"Closing all orders after {delay}s startup delay")
-                self.cancel_all_open_orders()
-
-        Thread(target=_delayed_close, daemon=True).start()
-
     def run(self) -> None:
-        self._log("Bot started (tickSize approach).")
-        self.schedule_order_close(10)
+        self._log("Bot started => no scheduled auto-close.")
+        # Falls du am Start ALLE Orders löschen willst, rufe "cancel_all_open_orders()" hier auf:
+        # self.cancel_all_open_orders()
+
         while True:
             time.sleep(self.check_interval)
             with self.lock:
@@ -509,14 +443,10 @@ class SpotLiquidityBot:
 if __name__ == "__main__":
     bot = SpotLiquidityBot(
         market="UBTC/USDC",
-        # Test: Tick-Size = 1 USDC, min Size = 0.001 UBTC
-        size_min=0.00005,
-        size_max=0.0001,
+        usd_order_size=20.0,   # always ~20$ orders
         spread=0.0004,
         price_tick=1.0,
         debug=True,
-        max_usd_order_size=50.0,
-        min_usd_order_size=20.0,
         max_order_age=60,
     )
     bot.run()
