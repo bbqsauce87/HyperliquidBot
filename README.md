@@ -27,7 +27,6 @@ Optional environment variables:
 
 ```bash
 export BASE_URL=https://api.hyperliquid.xyz      # default value
-export RPC_URL=https://api.hyperliquid.xyz/rpc   # default value
 ```
 
 `BASE_URL` should only contain the root API domain. **Do not** append `/rpc` or
@@ -38,14 +37,12 @@ Example values for mainnet:
 
 ```bash
 export BASE_URL=https://api.hyperliquid.xyz
-export RPC_URL=https://api.hyperliquid.xyz/rpc
 ```
 
 And for testnet:
 
 ```bash
 # export BASE_URL=https://api.hyperliquid-testnet.xyz
-# export RPC_URL=https://api.hyperliquid-testnet.xyz/rpc
 ```
 
 If your environment sets `http_proxy` or `https_proxy`, unset them before

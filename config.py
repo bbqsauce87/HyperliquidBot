@@ -15,4 +15,3 @@ if not WALLET_ADDRESS:
     raise EnvironmentError("WALLET_ADDRESS environment variable not set")
 
 BASE_URL = os.environ.get("BASE_URL", "https://api.hyperliquid.xyz")
-RPC_URL = os.environ.get("RPC_URL", "https://api.hyperliquid.xyz/rpc")
