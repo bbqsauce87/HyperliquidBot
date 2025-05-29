@@ -106,26 +106,20 @@ bot.
 
 ## Adjusting order size
 
-Orders can be sized in UBTC via the `size_min` and `size_max`
-parameters.  Every order must also satisfy a USD value range.
-`min_usd_order_size` enforces the exchange's minimum (default: `20`),
-while `max_usd_order_size` (default: `50`) prevents overly large orders
-when the BTC price changes.
+The bot sizes orders by USD value using the `usd_order_size` parameter.
+For each quote the base asset amount is computed from the current price
+so that the order is worth approximately this many dollars.  The default
+is `20`, meaning each order is for about twenty USDC.
 
 ```python
-bot = SpotLiquidityBot(size_min=0.0002, size_max=0.0003,
+bot = SpotLiquidityBot(usd_order_size=20.0,
                        spread=0.0004,
-                       min_usd_order_size=20,
-                       max_usd_order_size=50,
                        max_order_age=60)
 ```
 
 `spread=0.0004` means orders are quoted 0.04% away from the mid price
 on each side. This small buffer keeps them from filling immediately
 while still providing tight liquidity.
-
-No single order will exceed the configured USD limit.  Adjust the
-values to suit the size of your account.
 
 ## Startup test order
 
@@ -151,8 +145,8 @@ expiration timer works even across restarts.
 ## Repricing behaviour
 
 Orders are periodically repriced when the mid price drifts too far from the
-original order price. The `reprice_threshold` parameter now defaults to
-`2 * spread`, automatically scaling with your chosen spread.
+original order price. The `reprice_threshold` parameter uses a fixed
+default value of `0.005` (~0.5% away from the original price).
 
 When `dynamic_reprice_on_bbo` is enabled, cancelled orders are replaced
 immediately after a best bid/offer update instead of waiting for the normal
