@@ -17,14 +17,12 @@ from config import WALLET_ADDRESS, WALLET_PRIVATE_KEY, BASE_URL
 class SpotLiquidityBot:
     """
     Simple market-making bot for UBTC/USDC, placing exactly ~20 USD buy/sell orders
-    at a chosen spread. No random sizing, no scheduled auto-close.
+    at a chosen spread. With Inventory mgmt, dynamic spreads, and age-based expiry.
     """
 
     def __init__(
         self,
         market: str = "UBTC/USDC",
-        # Fixes for user:
-        # place EXACT 20$ orders => we compute size = 20 / price
         usd_order_size: float = 20.0,    # ~20 USD
         spread: float = 0.0004,         # e.g. 0.04%
         check_interval: int = 5,
@@ -42,7 +40,7 @@ class SpotLiquidityBot:
         self.info = Info(BASE_URL)
         asset = self.info.name_to_asset(market)
         self.decimals = self.info.asset_to_sz_decimals[asset]
-        # E.g. coin_code = "@142"
+        # e.g. coin_code = "@142"
         self.coin_code = self.info.name_to_coin.get(market, market.split("/")[0])
 
         self.usd_order_size = usd_order_size
@@ -53,6 +51,8 @@ class SpotLiquidityBot:
         self.debug = debug
         self.price_tick = price_tick
         self.max_order_age = max_order_age
+
+        # Inventar-Management
         self.max_btc_position = max_btc_position
         self.btc_balance = 0.0
         self.usdc_balance = 0.0
@@ -83,7 +83,7 @@ class SpotLiquidityBot:
         self.logger = logging.getLogger("bot")
         self.volume_log = open(volume_log_file, "a")
 
-        self._log(f"Bot init. coin_code={self.coin_code}, fixed USD order = {usd_order_size}, spread={spread}")
+        self._log(f"Bot init. coin_code={self.coin_code}, order={usd_order_size}USD, spread={spread}, maxPos={max_btc_position}")
         # Subscribe to BBO
         self.info.subscribe({"type": "bbo", "coin": self.market}, self._on_bbo)
 
@@ -91,7 +91,9 @@ class SpotLiquidityBot:
         print(msg)
         self.logger.info(msg)
 
-    # ------------------------------------------------------------------
+    # ----------------------
+    # BBO / Price logic
+    # ----------------------
     def _on_bbo(self, msg) -> None:
         if self.debug:
             self._log(f"[DEBUG] BBO => {msg}")
@@ -112,27 +114,6 @@ class SpotLiquidityBot:
             if self.dynamic_reprice_on_bbo:
                 self._dynamic_reprice()
 
-    def _place_startup_order(self, mid: float) -> None:
-        """
-        Place a single BUY order for ~20 USD at (mid*(1-0.0001)).
-        """
-        if mid is None:
-            return
-        px = self._round_price(mid * (1 - 0.0001))
-        # size = 20 / px
-        size = round(self.usd_order_size / px, self.decimals)
-
-        self._log(f"Startup BUY => px={px}, size={size}")
-        oid = self._place_order("buy", px, size)
-        if oid:
-            self.open_orders[oid] = {
-                "side": "buy",
-                "price": px,
-                "size": size,
-                "timestamp": time.time(),
-                "coin": self.coin_code,
-            }
-
     def _mid_price(self) -> float | None:
         if self.best_bid and self.best_ask:
             return (self.best_bid + self.best_ask) / 2
@@ -141,17 +122,37 @@ class SpotLiquidityBot:
     def _round_price(self, raw_px: float) -> float:
         return round(raw_px / self.price_tick) * self.price_tick
 
+    # ----------------------
+    # Inventory & Spreads
+    # ----------------------
+    def _update_inventory(self, side: str, filled_amt: float, fill_price: float) -> None:
+        """Update internal BTC/USDC balances after a fill."""
+        if side == "buy":
+            self.btc_balance += filled_amt
+            self.usdc_balance -= (filled_amt * fill_price)
+        else:  # side == "sell"
+            self.btc_balance -= filled_amt
+            self.usdc_balance += (filled_amt * fill_price)
+
+        self._log(f"[INV] side={side}, filled={filled_amt:.8f} at {fill_price},  => BTC={self.btc_balance:.8f}, USDC={self.usdc_balance:.2f}")
+
     def _get_spreads(self) -> tuple[float, float]:
-        """Return (buy_spread, sell_spread) adjusted by current BTC position."""
+        """Return (buy_spread, sell_spread) adjusted by current BTC position ratio."""
+        # If we hold too many BTC => bigger buySpread, smaller sellSpread => disincentivize more BTC.
         ratio = 0.0
         if self.max_btc_position > 0:
             ratio = max(-1.0, min(1.0, self.btc_balance / self.max_btc_position))
+
+        # By default both are self.spread
+        # ratio>0 => we have too many BTC => buy spread grows, sell spread shrinks
         buy_spread = self.spread * (1 + ratio)
         sell_spread = self.spread * (1 - ratio)
         return buy_spread, sell_spread
 
+    # ----------------------
+    # Order creation/cancel
+    # ----------------------
     def _place_order(self, side: str, px: float, size: float) -> int | None:
-        """Place a single GTC limit-order. size in base coin, px in USDC."""
         if px <= 0 or size <= 0:
             self._log(f"Invalid px/size => px={px}, sz={size}, skip order")
             return None
@@ -189,6 +190,7 @@ class SpotLiquidityBot:
                 fill_qty = st["filled"]["totalSz"]
                 avg_px = st["filled"]["avgPx"]
                 self._log(f"{side.capitalize()} instantly filled => qty={fill_qty}, px={avg_px}")
+                # Possibly update inventory if it's an immediate fill
             elif "error" in st:
                 err = st["error"]
                 self._log(f"Order error => {err}")
@@ -201,7 +203,6 @@ class SpotLiquidityBot:
         return None
 
     def cancel_order(self, oid: int) -> None:
-        """Cancel a single open order by looking up the coin in self.open_orders."""
         info = self.open_orders.get(oid)
         if not info:
             self._log(f"cancel_order => unknown oid={oid}")
@@ -218,51 +219,51 @@ class SpotLiquidityBot:
         except Exception as e:
             self._log(f"Exception while cancel_order => {e}")
 
-    # ------------------------------------------------------------------
+    # ----------------------
+    # Checking/Loading Orders
+    # ----------------------
     def _fetch_open_orders(self) -> dict[int, dict] | None:
-        """Fetch all open orders from the API, store them by oid => data."""
         try:
             raw = self.info.open_orders(self.address)
             results = {}
             for o in raw:
                 oid = o.get("oid")
-                if oid is None:
-                    continue
-                results[oid] = o
+                if oid is not None:
+                    results[oid] = o
             return results
         except Exception as e:
             self._log(f"Exception fetching open_orders => {e}")
             return None
 
     def load_open_orders(self) -> None:
-        """
-        Optional: fill self.open_orders from remote state.
-        If you call this at startup, you'll sync local open_orders to the exchange side.
-        """
+        """Optional sync with remote state at startup."""
         try:
             raw = self.info.open_orders(self.address)
         except Exception as exc:
             self._log(f"Failed to fetch open orders => {exc}")
             return
-        self.open_orders.clear()
-        for o in raw:
-            oid = o.get("oid")
-            if oid is None:
-                continue
-            side = "buy" if o.get("side") == "B" else "sell"
-            px = float(o.get("limitPx", 0.0))
-            sz = float(o.get("sz", 0.0))
-            c = o.get("coin")  # e.g. "@142"
-            ts = o.get("timestamp", time.time()*1000)/1000.0
-            self.open_orders[oid] = {
-                "side": side,
-                "price": px,
-                "size": sz,
-                "timestamp": ts,
-                "coin": c
-            }
+        with self.lock:
+            self.open_orders.clear()
+            for o in raw:
+                oid = o.get("oid")
+                if oid is None:
+                    continue
+                side = "buy" if o.get("side") == "B" else "sell"
+                px = float(o.get("limitPx", 0.0))
+                sz = float(o.get("sz", 0.0))
+                c = o.get("coin")  # e.g. "@142"
+                ts = o.get("timestamp", time.time()*1000)/1000.0
+                self.open_orders[oid] = {
+                    "side": side,
+                    "price": px,
+                    "size": sz,
+                    "timestamp": ts,
+                    "coin": c
+                }
 
-    # ------------------------------------------------------------------
+    # ----------------------
+    # Fills & partial-Fills
+    # ----------------------
     def check_fills(self) -> None:
         chain_orders = self._fetch_open_orders()
         if not chain_orders:
@@ -270,28 +271,56 @@ class SpotLiquidityBot:
             self._record_fills()
             return
 
-        # walk local open_orders
-        for oid, info in list(self.open_orders.items()):
-            chain_info = chain_orders.get(oid)
-            if chain_info:
-                remain = float(chain_info.get("sz", 0.0))
-                if remain < info["size"]:
-                    filled = info["size"] - remain
-                    self._log(
-                        f"Partial fill => oid={oid}, side={info['side']}, filled={filled}, remain={remain}"
-                    )
-                    self.open_orders[oid]["size"] = remain
-                    self._update_inventory(info["side"], filled, info["price"])
+        with self.lock:
+            for oid, info in list(self.open_orders.items()):
+                chain_info = chain_orders.get(oid)
+                if chain_info:
+                    remain = float(chain_info.get("sz", 0.0))
+                    if remain < info["size"]:
+                        # => partial fill
+                        filled = info["size"] - remain
+                        self._log(f"Partial fill => oid={oid}, side={info['side']}, filled={filled}, remain={remain}")
+                        # Update local size
+                        self.open_orders[oid]["size"] = remain
+
+                        # Inventory update
+                        self._update_inventory(info["side"], filled, info["price"])
+
+                        # place new opposite order with dynamic spread
+                        mid = self._mid_price()
+                        if mid:
+                            new_side = "sell" if info["side"] == "buy" else "buy"
+                            buy_spread, sell_spread = self._get_spreads()
+                            chosen_spread = sell_spread if new_side == "sell" else buy_spread
+                            px = (self._round_price(mid * (1 + chosen_spread))
+                                  if new_side == "sell"
+                                  else self._round_price(mid * (1 - chosen_spread)))
+
+                            new_sz = round(self.usd_order_size / px, self.decimals)
+                            new_id = self._place_order(new_side, px, new_sz)
+                            if new_id:
+                                self.open_orders[new_id] = {
+                                    "side": new_side,
+                                    "price": px,
+                                    "size": new_sz,
+                                    "timestamp": time.time(),
+                                    "coin": self.coin_code,
+                                }
+                else:
+                    # fully filled or canceled
+                    self._log(f"Order done => oid={oid}, side={info['side']} px={info['price']} sz={info['size']}")
+                    # => entire fill or manual cancel
+                    self._update_inventory(info["side"], info["size"], info["price"])
+
                     mid = self._mid_price()
                     if mid:
                         new_side = "sell" if info["side"] == "buy" else "buy"
                         buy_spread, sell_spread = self._get_spreads()
-                        spread = sell_spread if new_side == "sell" else buy_spread
-                        px = (
-                            self._round_price(mid * (1 + spread))
-                            if new_side == "sell"
-                            else self._round_price(mid * (1 - spread))
-                        )
+                        chosen_spread = sell_spread if new_side == "sell" else buy_spread
+                        px = (self._round_price(mid * (1 + chosen_spread))
+                              if new_side=="sell"
+                              else self._round_price(mid * (1 - chosen_spread)))
+
                         new_sz = round(self.usd_order_size / px, self.decimals)
                         new_id = self._place_order(new_side, px, new_sz)
                         if new_id:
@@ -302,41 +331,16 @@ class SpotLiquidityBot:
                                 "timestamp": time.time(),
                                 "coin": self.coin_code,
                             }
-            else:
-                # fully filled or canceled
-                self._log(
-                    f"Order done => oid={oid}, side={info['side']} px={info['price']} sz={info['size']}"
-                )
-                self._update_inventory(info["side"], info["size"], info["price"])
-                mid = self._mid_price()
-                if mid:
-                    new_side = "sell" if info["side"] == "buy" else "buy"
-                    buy_spread, sell_spread = self._get_spreads()
-                    spread = sell_spread if new_side == "sell" else buy_spread
-                    px = (
-                        self._round_price(mid * (1 + spread))
-                        if new_side == "sell"
-                        else self._round_price(mid * (1 - spread))
-                    )
-                    new_sz = round(self.usd_order_size / px, self.decimals)
-                    new_id = self._place_order(new_side, px, new_sz)
-                    if new_id:
-                        self.open_orders[new_id] = {
-                            "side": new_side,
-                            "price": px,
-                            "size": new_sz,
-                            "timestamp": time.time(),
-                            "coin": self.coin_code,
-                        }
-                self.open_orders.pop(oid, None)
+                    self.open_orders.pop(oid, None)
 
-        # remove local orders not on chain
-        self.open_orders = {
-            oid: v for oid,v in self.open_orders.items() if oid in chain_orders
-        }
-        # log fills
+            # remove local orders not on chain
+            self.open_orders = {oid: o for oid, o in self.open_orders.items() if oid in chain_orders}
+
         self._record_fills()
 
+    # ----------------------
+    # Fills logging
+    # ----------------------
     def _record_fills(self) -> None:
         try:
             fills = self.info.user_fills(self.address)
@@ -358,23 +362,10 @@ class SpotLiquidityBot:
             self.volume_log.write(line)
             self.volume_log.flush()
 
-    def _update_inventory(self, side: str, filled_amt: float, fill_price: float) -> None:
-        """Update internal BTC/USDC balances after a fill."""
-        if side == "buy":
-            self.btc_balance += filled_amt
-            self.usdc_balance -= filled_amt * fill_price
-        else:
-            self.btc_balance -= filled_amt
-            self.usdc_balance += filled_amt * fill_price
-        self._log(
-            f"Inventory update => btc={self.btc_balance:.8f}, usdc={self.usdc_balance:.2f}"
-        )
-
-    # ------------------------------------------------------------------
+    # ----------------------
+    # ensure Orders, reprice, etc.
+    # ----------------------
     def ensure_orders(self) -> None:
-        """
-        Make sure we have exactly 1 buy and 1 sell open, each ~20 USD at +/- spread around mid.
-        """
         mid = self._mid_price()
         if not mid:
             if self.debug:
@@ -382,6 +373,7 @@ class SpotLiquidityBot:
             return
 
         sides = {o["side"] for o in self.open_orders.values()}
+
         buy_spread, sell_spread = self._get_spreads()
 
         if "buy" not in sides:
@@ -439,7 +431,9 @@ class SpotLiquidityBot:
     def _dynamic_reprice(self) -> None:
         self.reprice_orders()
 
-    # Optional: Du kannst diesen Aufruf weglassen, wenn du NICHT beim Start alles canceln willst
+    # ----------------------
+    # Bulk-cancel etc.
+    # ----------------------
     def cancel_all_open_orders(self) -> None:
         self._log("cancel_all_open_orders => fetch open orders.")
         try:
@@ -466,13 +460,11 @@ class SpotLiquidityBot:
                 self._log(f"Error bulk_cancel => {exc}")
 
         self._log("cancel_all_open_orders => done.")
-        # time.sleep(1)
         self.load_open_orders()
 
     def run(self) -> None:
-        self._log("Bot started => no scheduled auto-close.")
-        # Falls du am Start ALLE Orders löschen willst, rufe "cancel_all_open_orders()" hier auf:
-        # self.cancel_all_open_orders()
+        self._log("Bot started => with inventory + dynamic spread merges.")
+        # Optional: self.cancel_all_open_orders()
 
         while True:
             time.sleep(self.check_interval)
@@ -486,10 +478,11 @@ class SpotLiquidityBot:
 if __name__ == "__main__":
     bot = SpotLiquidityBot(
         market="UBTC/USDC",
-        usd_order_size=20.0,   # always ~20$ orders
+        usd_order_size=20.0,
         spread=0.0004,
         price_tick=1.0,
         debug=True,
         max_order_age=60,
+        max_btc_position=0.1,
     )
     bot.run()
