@@ -114,7 +114,8 @@ is `200`, meaning each order is for about two hundred USDC.
 ```python
 bot = SpotLiquidityBot(usd_order_size=200.0,
                        spread=0.0004,
-                       max_order_age=90)
+                       max_order_age=90,
+                       refill_delay=15)
 ```
 
 `spread=0.0004` means orders are quoted 0.04% away from the mid price
@@ -158,6 +159,10 @@ Each order is tagged with a timestamp when placed. If an order remains open
 longer than `max_order_age` seconds (default: `90`) **and** the mid price has
 moved at least `$500` away from the order's price, it will be cancelled on the
 next iteration of the main loop.
+
+`refill_delay` controls how soon a new order of the same side is placed after a
+fill. The default is `15` seconds, meaning a new buy (or sell) quote only
+appears at least fifteen seconds after the previous one executed.
 
 
 ## Running tests

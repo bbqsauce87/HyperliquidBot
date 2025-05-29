@@ -34,6 +34,7 @@ class SpotLiquidityBot:
         max_btc_position: float = 0.1,
         crash_threshold: float = 0.01,
         crash_window: int = 60,
+        refill_delay: int = 15,
         log_file: str = "trade_log.txt",
         volume_log_file: str = "volume_log.txt",
     ) -> None:
@@ -54,6 +55,7 @@ class SpotLiquidityBot:
         self.max_order_age = max_order_age
         self.crash_threshold = crash_threshold
         self.crash_window = crash_window
+        self.refill_delay = refill_delay
         self.price_history: deque[tuple[float, float]] = deque()
 
         # Inventar-Management
@@ -68,6 +70,7 @@ class SpotLiquidityBot:
         self.processed_fills: set[str] = set()
         self.first_bbo_received = False
         self.lock = Lock()
+        self.next_refill_time = {"buy": 0.0, "sell": 0.0}
 
         account = Account.from_key(WALLET_PRIVATE_KEY)
         self.exchange = Exchange(account, BASE_URL, account_address=WALLET_ADDRESS)
@@ -272,8 +275,8 @@ class SpotLiquidityBot:
     # ----------------------
     def check_fills(self) -> None:
         chain_orders = self._fetch_open_orders()
-        if not chain_orders:
-            self._log("check_fills => no open orders from exchange or error. skip.")
+        if chain_orders is None:
+            self._log("check_fills => error fetching open orders. skip.")
             self._record_fills()
             return
 
@@ -292,51 +295,15 @@ class SpotLiquidityBot:
                         # Inventory update
                         self._update_inventory(info["side"], filled, info["price"])
 
-                        # place new opposite order with dynamic spread
-                        mid = self._mid_price()
-                        if mid:
-                            new_side = "sell" if info["side"] == "buy" else "buy"
-                            buy_spread, sell_spread = self._get_spreads()
-                            chosen_spread = sell_spread if new_side == "sell" else buy_spread
-                            px = (self._round_price(mid * (1 + chosen_spread))
-                                  if new_side == "sell"
-                                  else self._round_price(mid * (1 - chosen_spread)))
-
-                            new_sz = round(self.usd_order_size / px, self.decimals)
-                            new_id = self._place_order(new_side, px, new_sz)
-                            if new_id:
-                                self.open_orders[new_id] = {
-                                    "side": new_side,
-                                    "price": px,
-                                    "size": new_sz,
-                                    "timestamp": time.time(),
-                                    "coin": self.coin_code,
-                                }
+                        if remain == 0:
+                            self.next_refill_time[info["side"]] = time.time() + self.refill_delay
+                            self.open_orders.pop(oid, None)
                 else:
                     # fully filled or canceled
                     self._log(f"Order done => oid={oid}, side={info['side']} px={info['price']} sz={info['size']}")
                     # => entire fill or manual cancel
                     self._update_inventory(info["side"], info["size"], info["price"])
-
-                    mid = self._mid_price()
-                    if mid:
-                        new_side = "sell" if info["side"] == "buy" else "buy"
-                        buy_spread, sell_spread = self._get_spreads()
-                        chosen_spread = sell_spread if new_side == "sell" else buy_spread
-                        px = (self._round_price(mid * (1 + chosen_spread))
-                              if new_side=="sell"
-                              else self._round_price(mid * (1 - chosen_spread)))
-
-                        new_sz = round(self.usd_order_size / px, self.decimals)
-                        new_id = self._place_order(new_side, px, new_sz)
-                        if new_id:
-                            self.open_orders[new_id] = {
-                                "side": new_side,
-                                "price": px,
-                                "size": new_sz,
-                                "timestamp": time.time(),
-                                "coin": self.coin_code,
-                            }
+                    self.next_refill_time[info["side"]] = time.time() + self.refill_delay
                     self.open_orders.pop(oid, None)
 
             # remove local orders not on chain
@@ -379,8 +346,9 @@ class SpotLiquidityBot:
         sides = {o["side"] for o in self.open_orders.values()}
 
         buy_spread, sell_spread = self._get_spreads()
+        now = time.time()
 
-        if "buy" not in sides:
+        if "buy" not in sides and now >= self.next_refill_time["buy"]:
             buy_px = self._round_price(mid * (1 - buy_spread))
             buy_sz = round(self.usd_order_size / buy_px, self.decimals)
             self._log(f"ensure_orders => place BUY px={buy_px}, size={buy_sz}")
@@ -394,7 +362,7 @@ class SpotLiquidityBot:
                     "coin": self.coin_code,
                 }
 
-        if "sell" not in sides:
+        if "sell" not in sides and now >= self.next_refill_time["sell"]:
             sell_px = self._round_price(mid * (1 + sell_spread))
             sell_sz = round(self.usd_order_size / sell_px, self.decimals)
             self._log(f"ensure_orders => place SELL px={sell_px}, size={sell_sz}")
