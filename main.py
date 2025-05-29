@@ -282,7 +282,9 @@ class SpotLiquidityBot:
 
     def cancel_order(self, oid: int) -> None:
         try:
-            resp = self.exchange.cancel(self.market, oid)
+            # Follow the official SDK pattern by passing the canonical coin name
+            # rather than the market pair when cancelling orders.
+            resp = self.exchange.cancel(self.coin_code, oid)
             self._log(f"Cancel response: {resp}")
             if resp.get("status") == "ok":
                 self._log(f"Canceled order oid={oid}")
