@@ -441,10 +441,11 @@ class SpotLiquidityBot:
             return
 
         try:
-            resp = self.exchange.schedule_cancel(None)
-            self._log(f"Sent schedule_cancel action: {resp}")
+            cancels = [{"coin": o["coin"], "oid": o["oid"]} for o in open_os]
+            resp = self.exchange.bulk_cancel(cancels)
+            self._log(f"Sent bulk_cancel: {resp}")
         except Exception as exc:
-            self._log(f"Error sending schedule_cancel: {exc}")
+            self._log(f"Error sending bulk_cancel: {exc}")
 
         # give the API a moment to process cancellations and refresh local state
         time.sleep(1)
