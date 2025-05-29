@@ -33,6 +33,7 @@ class SpotLiquidityBot:
         debug: bool = True,
         price_tick: float = 1.0,
         max_order_age: int = 60,
+        max_btc_position: float = 0.1,
         log_file: str = "trade_log.txt",
         volume_log_file: str = "volume_log.txt",
     ) -> None:
@@ -52,6 +53,9 @@ class SpotLiquidityBot:
         self.debug = debug
         self.price_tick = price_tick
         self.max_order_age = max_order_age
+        self.max_btc_position = max_btc_position
+        self.btc_balance = 0.0
+        self.usdc_balance = 0.0
 
         self.best_bid: float | None = None
         self.best_ask: float | None = None
@@ -136,6 +140,15 @@ class SpotLiquidityBot:
 
     def _round_price(self, raw_px: float) -> float:
         return round(raw_px / self.price_tick) * self.price_tick
+
+    def _get_spreads(self) -> tuple[float, float]:
+        """Return (buy_spread, sell_spread) adjusted by current BTC position."""
+        ratio = 0.0
+        if self.max_btc_position > 0:
+            ratio = max(-1.0, min(1.0, self.btc_balance / self.max_btc_position))
+        buy_spread = self.spread * (1 + ratio)
+        sell_spread = self.spread * (1 - ratio)
+        return buy_spread, sell_spread
 
     def _place_order(self, side: str, px: float, size: float) -> int | None:
         """Place a single GTC limit-order. size in base coin, px in USDC."""
@@ -264,13 +277,21 @@ class SpotLiquidityBot:
                 remain = float(chain_info.get("sz", 0.0))
                 if remain < info["size"]:
                     filled = info["size"] - remain
-                    self._log(f"Partial fill => oid={oid}, side={info['side']}, filled={filled}, remain={remain}")
+                    self._log(
+                        f"Partial fill => oid={oid}, side={info['side']}, filled={filled}, remain={remain}"
+                    )
                     self.open_orders[oid]["size"] = remain
-                    # Opposite side => place a new 20$ order
+                    self._update_inventory(info["side"], filled, info["price"])
                     mid = self._mid_price()
                     if mid:
-                        new_side = "sell" if info["side"]=="buy" else "buy"
-                        px = self._round_price(mid * (1+self.spread)) if new_side=="sell" else self._round_price(mid*(1-self.spread))
+                        new_side = "sell" if info["side"] == "buy" else "buy"
+                        buy_spread, sell_spread = self._get_spreads()
+                        spread = sell_spread if new_side == "sell" else buy_spread
+                        px = (
+                            self._round_price(mid * (1 + spread))
+                            if new_side == "sell"
+                            else self._round_price(mid * (1 - spread))
+                        )
                         new_sz = round(self.usd_order_size / px, self.decimals)
                         new_id = self._place_order(new_side, px, new_sz)
                         if new_id:
@@ -283,11 +304,20 @@ class SpotLiquidityBot:
                             }
             else:
                 # fully filled or canceled
-                self._log(f"Order done => oid={oid}, side={info['side']} px={info['price']} sz={info['size']}")
+                self._log(
+                    f"Order done => oid={oid}, side={info['side']} px={info['price']} sz={info['size']}"
+                )
+                self._update_inventory(info["side"], info["size"], info["price"])
                 mid = self._mid_price()
                 if mid:
-                    new_side = "sell" if info["side"]=="buy" else "buy"
-                    px = self._round_price(mid*(1+self.spread)) if new_side=="sell" else self._round_price(mid*(1-self.spread))
+                    new_side = "sell" if info["side"] == "buy" else "buy"
+                    buy_spread, sell_spread = self._get_spreads()
+                    spread = sell_spread if new_side == "sell" else buy_spread
+                    px = (
+                        self._round_price(mid * (1 + spread))
+                        if new_side == "sell"
+                        else self._round_price(mid * (1 - spread))
+                    )
                     new_sz = round(self.usd_order_size / px, self.decimals)
                     new_id = self._place_order(new_side, px, new_sz)
                     if new_id:
@@ -328,6 +358,18 @@ class SpotLiquidityBot:
             self.volume_log.write(line)
             self.volume_log.flush()
 
+    def _update_inventory(self, side: str, filled_amt: float, fill_price: float) -> None:
+        """Update internal BTC/USDC balances after a fill."""
+        if side == "buy":
+            self.btc_balance += filled_amt
+            self.usdc_balance -= filled_amt * fill_price
+        else:
+            self.btc_balance -= filled_amt
+            self.usdc_balance += filled_amt * fill_price
+        self._log(
+            f"Inventory update => btc={self.btc_balance:.8f}, usdc={self.usdc_balance:.2f}"
+        )
+
     # ------------------------------------------------------------------
     def ensure_orders(self) -> None:
         """
@@ -340,9 +382,10 @@ class SpotLiquidityBot:
             return
 
         sides = {o["side"] for o in self.open_orders.values()}
+        buy_spread, sell_spread = self._get_spreads()
 
         if "buy" not in sides:
-            buy_px = self._round_price(mid*(1-self.spread))
+            buy_px = self._round_price(mid * (1 - buy_spread))
             buy_sz = round(self.usd_order_size / buy_px, self.decimals)
             self._log(f"ensure_orders => place BUY px={buy_px}, size={buy_sz}")
             oid = self._place_order("buy", buy_px, buy_sz)
@@ -356,7 +399,7 @@ class SpotLiquidityBot:
                 }
 
         if "sell" not in sides:
-            sell_px = self._round_price(mid*(1+self.spread))
+            sell_px = self._round_price(mid * (1 + sell_spread))
             sell_sz = round(self.usd_order_size / sell_px, self.decimals)
             self._log(f"ensure_orders => place SELL px={sell_px}, size={sell_sz}")
             oid = self._place_order("sell", sell_px, sell_sz)
