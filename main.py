@@ -17,14 +17,14 @@ from config import WALLET_ADDRESS, WALLET_PRIVATE_KEY, BASE_URL
 
 class SpotLiquidityBot:
     """
-    Simple market-making bot for UBTC/USDC, placing exactly ~200 USD buy/sell orders
+    Simple market-making bot for UBTC/USDC, placing exactly ~20 USD buy/sell orders
     at a chosen spread. With Inventory mgmt, dynamic spreads, and age-based expiry.
     """
 
     def __init__(
         self,
         market: str = "UBTC/USDC",
-        usd_order_size: float = 200.0,    # ~200 USD
+        usd_order_size: float = 20.0,    # ~20 USD
         spread: float = 0.0004,         # e.g. 0.04%
         check_interval: int = 5,
         reprice_threshold: float = 0.005,
@@ -475,7 +475,7 @@ class SpotLiquidityBot:
 if __name__ == "__main__":
     bot = SpotLiquidityBot(
         market="UBTC/USDC",
-        usd_order_size=200.0,
+        usd_order_size=20.0,
         spread=0.0004,
         price_tick=1.0,
         max_order_age=90,
