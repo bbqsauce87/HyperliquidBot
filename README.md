@@ -169,18 +169,19 @@ next iteration of the main loop. The `$500` value can be adjusted via the
 
 ## Running tests
 
-Install the Python dependencies using `requirements.txt` and the additional
-packages required for tests listed in `requirements-dev.txt`:
+Running `pytest` requires both the regular and development dependencies. Install them first:
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-Then execute the test suite:
+Afterwards run the suite with:
 
 ```bash
 pytest
 ```
+
+For convenience you can also use the `run-tests.sh` script which installs the requirements and launches `pytest` for you.
 
 ## Cancel all outstanding UBTC/USDC orders
 
