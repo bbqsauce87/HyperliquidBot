@@ -105,7 +105,10 @@ class SpotLiquidityBot:
             ]
         )
         self.logger = logging.getLogger("bot")
-        self.volume_log = open(volume_log_file, "a")
+        self.volume_log = open(volume_log_file, "a+")
+        self.volume_log.seek(0)
+        self._load_processed_fills()
+        self.volume_log.seek(0, os.SEEK_END)
 
         self._log(
             f"Bot init. coin_code={self.coin_code}, order={usd_order_size}USD, "
@@ -123,6 +126,19 @@ class SpotLiquidityBot:
             self.logger.info(msg)
         else:
             self.logger.debug(msg)
+
+    def _load_processed_fills(self) -> None:
+        """Populate processed_fills from existing volume_log file."""
+        for line in self.volume_log:
+            parts = line.strip().split(",")
+            if len(parts) < 2:
+                continue
+            # old log format had no hash field
+            if len(parts) == 3:
+                # can't recover hash, skip
+                continue
+            h = parts[1]
+            self.processed_fills.add(h)
 
     # ----------------------
     # BBO / Price logic
@@ -451,7 +467,9 @@ class SpotLiquidityBot:
             sz = f.get("filledSz") or f.get("sz")
             px = f.get("avgPx") or f.get("px")
             fee = f.get("fee")
-            line = f"{sz},{px},{fee}\n"
+            ts = f.get("time")
+            side = f.get("side")
+            line = f"{ts},{h},{side},{sz},{px},{fee}\n"
             self.volume_log.write(line)
             self.volume_log.flush()
 
